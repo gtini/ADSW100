@@ -1,6 +1,6 @@
 # EEPROM: compatibilità e migrazione Videlio
 
-Data: 14 novembre 2026. Stato: analisi e proposta, nessuna migrazione implementata. Le assegnazioni della futura struttura sono provvisorie fino alla verifica del componente e dei dump reali.
+Data: 14 novembre 2026. Stato: prima fase funzionale implementata sulla baseline 480 MHz `0b5fa6c`, collaudata dall’utente. Migrazione e menu verificati con test software; collaudo fisico della nuova fase ancora da eseguire.
 
 ## Evidenze v1.4.0 e Videlio v1.4.1
 
@@ -38,7 +38,7 @@ U16/U32 sono serializzati dagli helper byte più significativo per primo. Per IP
 
 Default EE_InitMemory: DHCP=1; IP/mask/gateway/DNS=0; DMX address=1; mode=2 sACN; Art-Net=0; sACN=1 multicast; priorità sACN=0; backlight=0; OFF Time=30; ordine protocolli=0. Non applicare questi default globalmente durante migrazione di una configurazione valida.
 
-## Limiti attuali
+## Limiti della baseline prima di questa fase
 
 - Nessun CRC, lunghezza, contatore generazione o copia di recovery.
 - Il magic non garantisce integrità e non distingue le versioni 1.4.0/1.4.1.
@@ -48,37 +48,75 @@ Default EE_InitMemory: DHCP=1; IP/mask/gateway/DNS=0; DMX address=1; mode=2 sACN
 - Il limite EE_SIZE consente indirizzi riservati EUI; va separato limite di lettura da limite di scrittura.
 - NFC_Service al boot può salvare prima della migrazione: va coordinato con la nuova sequenza di avvio.
 
-## Decisione corrente: mappa legacy e 128 byte
+## Struttura 2 implementata: soltanto i tre campi autorizzati
 
-La richiesta di porting/stabilizzazione successiva all'audit conferma **128 byte realmente utilizzabili dall'applicazione, 0x00..0x7F**. Restano invariati indirizzi, codifica e parametri delle versioni 1.4.0 e Videlio 1.4.1. Non aggiungere campi, doppio slot, CRC persistenti o strutture nuove in questa fase. Le proposte iniziali di formato v2 a due slot e relativo commit sono ritirate per questa fase e non costituiscono una specifica implementativa.
+Sono utilizzabili dall'applicazione 0x00..0x7F. Magic, indirizzi e codifiche dei parametri 0x03..0x24 restano identici. Gap 0x1B preservato. Nessun CRC, doppio slot, seriale, stringa o struttura persistente aggiuntiva.
 
-La migrazione branding è rinviata: nessuna conversione o inizializzazione automatica delle configurazioni esistenti. Il firmware installato deve continuare a leggere la mappa legacy; non usare il byte versione oggi indefinito per innescare conversioni.
+| Offset | Campo | Codifica corrente |
+|---|---|---|
+| 0x02 | Versione struttura, byte già riservato | 0x02 completa; 0x00 scrittura metadati pendente |
+| 0x25 | Brand con discriminante incorporato | 0xD0 AXN System/NODIM01; 0xD1 Videlio HMS/ADSW100; 0xD2 Generic/NODIM01 |
+| 0x26 | Richiesta codice con discriminante incorporato | 0xA4 disabilitata, 0xA5 abilitata |
 
-Correzioni autorizzate per la ripresa dello sviluppo:
+Il brand in RAM/API resta 0/1/2, la policy 0/1. I bit alti dei byte persistenti distinguono i campi nuovi da memoria legacy indefinita; non sono parametri o copie ulteriori. Il riconoscimento richiede insieme magic, parametri legacy validi, versione e campi marcati coerenti. Il solo byte 0x02 non classifica una EEPROM: i test provano tutte le sue 256 combinazioni legacy con area aggiunta non inizializzata.
 
-1. Propagare gli errori HAL nelle letture/scritture e nei load/save, senza dichiarare successo dopo un errore I²C.
-2. Leggere e validare un candidato completo prima di sostituire la configurazione RAM; errore bus non equivale a EEPROM vuota.
-3. Proteggere tutte le scritture applicative entro 0x00..0x7F con controllo di lunghezza senza overflow; consentire letture EUI separate. Non modificare indirizzi esistenti.
-4. Eliminare riparazioni persistenti implicite dal load; mantenere originale su valori dubbi. Nessuna scrittura automatica guidata da versioni mancanti o sconosciute.
-5. Coordinare NFC affinché dati non validi non vengano applicati o salvati. Confermare l'interpretazione degli IP prima di intervenire sulle conversioni.
-6. Mantenere factory reset soltanto esplicito, con errori verificabili e senza scrivere l'area EUI.
+## Policy delle unità legacy e default di fabbrica
 
-La sola correzione degli errori I/O non rende atomico un salvataggio multi-campo: il rischio di configurazione parziale dopo power-cut resta aperto e va documentato. Non introdurre una soluzione persistente diversa da quella autorizzata per eliminarlo. Per la futura migrazione Brand1 occorrerà un nuovo piano entro i vincoli di memoria, con snapshot dell'originale e validazione prima di qualsiasi scrittura; nessuna assegnazione di indirizzi v2 è approvata.
+La copia `/Users/gianlucatini/micro/Studio Due/ADSW100_VID_NO_CODE/Core/Src/user_interface.c` usa effettivamente UI_ENABLE_UNLOCK_CODE=0, ma **l'utente ha successivamente confermato che i dispositivi legacy installati richiedevano il codice**. Tale conferma prevale sulla precedente deduzione dalla copia NO_CODE. Non esiste un campo legacy che consenta di inferire questa variante dal dump.
 
-Stato dopo rigenerazione: correzioni EEPROM implementate in eeprom.c/.h. Lettura snapshot in un solo accesso prima della pubblicazione RAM; esiti HAL propagati; scritture protette entro 0x00..0x7F e verificate con read-back; helper di scrittura restituiscono stato. Il save preserva byte versione/gap e scrive soltanto i byte cambiati; non aggiunge campi. Load senza riparazioni persistenti: OFF Time/ordine protocolli storicamente assenti usano fallback solo RAM. Il pannello segnala errori di save; NFC non dichiara aggiornamento riuscito dopo fallimento. Nessuna migrazione o inizializzazione automatica.
+La migrazione valida imposta pertanto **Brand1 Videlio e menu_code_required=1**, senza cambiare gli altri parametri. Nessuna riscrittura automatica di una policy già salvata in una struttura 2 valida.
 
-Test host EEPROM PASS: limite 128 byte/EUI, letture fallite senza pubblicazione RAM, scritture fallite senza falso successo, nessuna scrittura durante load, conservazione 0x02/0x1B e round-trip configurazione. Test software non sostituisce power-cut su hardware. Rimangono letture scalar legacy con ritorno zero su errore, usate dalla diagnostica/provisioning: il load configurazione non le usa più. Il fallimento di un save può lasciare EEPROM parziale e RAM già modificata: viene segnalato, non mascherato con un rollback persistente potenzialmente distruttivo.
+| Brand | Default quando selezionato via CDC | Override CDC |
+|---|---:|---|
+| 0 AXN System | 0 | 0 oppure 1 nei primi 30 s |
+| 1 Videlio HMS | 1 | 0 oppure 1 nei primi 30 s |
+| 2 Generic | 0 | Sempre 0; richiesta 1 rifiutata |
 
-## Verifiche prima del rilascio
+La nuova inizializzazione esplicita crea AXN/codice OFF. Il comando `brand=` applica il default della tabella anche se seleziona lo stesso ID; `menu_code=` permette l'override ammesso. Le modifiche diventano attive soltanto al riavvio, come RSH7.
 
-- [ ] BOM, sigla chip, pagine, protezioni, area EUI e capacità su revisioni hardware installate.
-- [ ] Dump reali 1.4.0 e Videlio 1.4.1, inclusi NO_CODE, con configurazione pannello/IP nota.
-- [ ] Conferma preferenza codice menu della variante Videlio; nessuna deduzione dal nome cartella.
-- [ ] Ricostruzione byte order IP/DNS e round-trip senza variazioni di indirizzi.
-- [x] Protezione scritture 0x00..0x7F e campi legacy invariati verificati con test host; collaudo fisico separato.
-- [ ] Stabilizzazione conserva DMX, mode, entrambi universi, trasporto, priorità, rete completa, display e OFF Time; migrazione rinviata.
-- [ ] Verificare reboot reali senza conversioni/scritture; test host load senza scrittura già superato.
-- [ ] Errore I²C in ogni fase e power-cut a ogni pagina: documentare i limiti di recupero del formato legacy senza copie.
-- [ ] Versione assente/sconosciuta, letture corte e valori fuori range non provocano conversione o inizializzazione.
-- [ ] NFC/pannello/RDM/web non salvano prima del riconoscimento/migrazione.
-- [ ] Factory reset e downgrade hanno politiche esplicite che preservano identità/EUI e backup legacy.
+## Servizio CDC e protezione dal pannello
+
+- `brand?` restituisce `brand=<id>` persistito; `menu_code?` restituisce `menu_code=<0|1>` persistito. Query disponibili anche dopo 30 s, senza migrazioni o scritture implicite.
+- `brand=<0..2>` e `menu_code=<0|1>` accettati soltanto quando elaborati prima di HAL tick 30000. Successo `OK REBOOT`, sintassi/range/I²C non validi `ERROR`, scrittura fuori finestra `LOCKED`. CR, LF o CRLF; decimali senza segno/suffissi come RSH7. Inviare un comando per volta attendendo risposta.
+- Il conteggio parte dal tick iniziale HAL del boot, non da apertura porta, enumerazione o primo comando. Anche un normale reset MCU inizia un nuovo boot, come nel riferimento RSH7; una riconnessione USB no. La chiusura latched impedisce riapertura al wrap del tick. Un comando completato o elaborato dopo la deadline è rifiutato; una transazione I²C iniziata prima può terminare poco dopo.
+- `EE_SaveIdentity` salva soltanto su EEPROM, senza cambiare l'identità RAM attiva; query e comandi successivi leggono i metadati persistiti per non perdere il primo aggiornamento. Non ricarica DMX/mode/rete e non interrompe i protocolli.
+- ISR CDC raccoglie soltanto byte; parsing e I²C avvengono nel main tramite USB_ServiceTask. Risposte persistenti, retry BUSY e priorità sui log; overflow/control byte invalidano l'intera riga fino a CR/LF.
+- System Setup ha soltanto i quattro campi originali. Nessuna voce Brand/Menu code. Il click lungo HOME usa la policy attiva per accesso diretto o confronto del codice esistente.
+- `EE_ResetUserMemory` e `HardFactoryReset(true)` usati dal pannello preservano versione/brand/policy persistiti. L'inizializzazione nuova `EE_InitMemory` resta nel percorso FGM CDC preesistente su EEPROM non inizializzata; non è disponibile per riprogrammare identità esistente dalla UI.
+
+Riferimenti verificati: RSH7 usb_debug.c usa `brand?`, `brand=`, deadline assoluta 30000 e risposta `OK REBOOT` senza cambio dell'identità attiva. URC01 espone comandi diagnostici `hw ...` in hw_api.c e non è stato trovato un setter CDC brand/menu equivalente; per questi parametri è stata quindi scelta la sintassi RSH7. `menu_code` è l'estensione ADSW100 nella medesima forma.
+
+## Sequenza implementata
+
+1. EE_LoadConfig legge 0x00..0x26 in un accesso verificato. Valida magic e gli stessi range della stabilizzazione prima di qualunque scrittura; errori I²C, magic invalido o valori non riconosciuti non causano inizializzazione.
+2. Versione 2 e coppia marcata valida: carica senza scrivere. Brand/policy sono pubblicati in RAM insieme agli altri parametri soltanto al successo.
+3. Coppia marcata e versione pendente 0: verifica range, completa soltanto il byte versione e poi pubblica. Coppia marcata con versione futura sconosciuta oppure brand 3 è rifiutata senza scritture.
+4. Configurazione legacy riconosciuta senza una tupla nuova valida: prepara Brand1/codice ON. EE_StoreIdentity scrive versione pendente, i due campi e infine versione 2. Nella transizione verso Generic scrive prima codice OFF e poi brand; negli altri casi scrive prima brand. In questo modo nessuna coppia pendente prodotta dal firmware è Generic/ON. Ogni write ha ACK polling/read-back. Nessun parametro legacy, gap o altro byte libero viene riscritto durante la migrazione.
+5. Se la migrazione si interrompe prima della coppia completa, il successivo load riconosce ancora il legacy e ripete solo i metadati; dopo la coppia completa riprende il commit. Un errore non pubblica una configurazione RAM parziale.
+6. EE_SaveIdentity valida i candidati, rilegge la configurazione valida e aggiorna soltanto i metadati per il prossimo boot. Un save identico non scrive. I normali save di configurazione preservano identità/versione e continuano a scrivere solo i parametri legacy modificati.
+7. EE_InitMemory resta esplicita: invalida magic, scrive default e metadati AXN/codice OFF, commette magic per ultimo. Il reset utente usa invece EE_ResetUserMemory e conserva i metadati. Non è chiamata automaticamente dal load; un'interruzione del reset lascia una configurazione non inizializzata invece di spacciarla per valida.
+
+## Limiti espliciti
+
+- Senza CRC non si rileva ogni corruzione che produca un altro valore lecito. Byte legacy liberi arbitrari che coincidessero esattamente con una tupla nuova valida sono indistinguibili da un vero formato 2; non presentare i discriminanti come autenticazione o prova matematica di provenienza.
+- Una tupla nuova parzialmente incoerente con versione 2 e almeno un campo marcato è rifiutata, non normalizzata a un altro brand. Nessuna conversione automatica di versioni future riconosciute.
+- Fault injection simula errori restituiti da I²C e interruzioni tra operazioni, non tutte le possibili alterazioni analogiche di un byte durante power-cut. Una versione strappata/sconosciuta con campi marcati viene conservata e segnalata, non forzata a default.
+- Una modifica esplicita di brand e policy non è una transazione atomica a due campi sotto power-cut: in stato pendente si recupera la coppia marcata presente. Le due impostazioni sono indipendenti; il payload legacy rimane intatto. Lo stesso limite multi-campo della configurazione legacy resta valido.
+- I fallback OFF Time/ordine protocolli storicamente assenti restano solo RAM; la migrazione conserva anche i relativi byte originali. Non converte IPv4, DNS o altri parametri.
+- Niente rilettura o ricostruzione di identità da NFC: il formato NFC resta quello della baseline.
+
+## Verifiche eseguite e collaudo residuo
+
+- [x] Build ARM completa con GCC CubeIDE, 149 unità C/ASM, zero errori/warning.
+- [x] Nuova EEPROM non inizializzata non provoca write nel load; init esplicito AXN/codice OFF.
+- [x] Tutti i 256 valori del vecchio byte versione migrano se magic/layout sono validi e metadati assenti.
+- [x] Byte per byte preservati 0x00..0x7F eccetto i soli tre offset autorizzati; EUI non scritta.
+- [x] Conservati DMX 407, Auto, entrambi universi, priorità, OFF Time e dati rete non predefiniti.
+- [x] Migrazione ripetuta non scrive; errori in ogni operazione I/O e nei read-back recuperati al load successivo senza perdita payload; provate anche tutte le transizioni tra le cinque coppie brand/policy ammesse.
+- [x] Tre brand e policy ammesse salvati/riletti; Generic/1 rifiutato; brand 3/255, policy 2 e versione futura riconosciuta rifiutati.
+- [x] Accesso menu diretto o con codice corretto/errato, assenza edit UI e reset utente senza modifica identità.
+- [x] Servizio CDC: default per brand, override ammessi, errori, scadenza 29999/30000 ms, frammentazione/overflow, BUSY, reconnect e wrap.
+- [ ] Dump reali delle unità installate e power-cut fisico nelle fasi di migrazione/reset.
+- [ ] Confermare BOM/page size, pannello e rendering dei tre brand sul display reale.
+
+Test riproducibili: `python3 tests/test_stabilization.py`; build: `python3 tests/test_stabilization.py --arm-build /tmp/adsw100-branding`. Nessun commit/tag automatico.

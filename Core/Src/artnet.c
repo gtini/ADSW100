@@ -168,7 +168,7 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     r[18] = (uint8_t)(artnet_universe >> 8); r[19] = (uint8_t)((artnet_universe >> 4) & 15);
 
     /* Oem (BE) – 0xFFFF non registrato */
-    wr_be16(&r[20], 0xFFFF);
+    wr_be16(&r[20], BRAND_ARTNET_OEM_UNASSIGNED);
 
     /* UbeaVersion */
     r[22] = 0;
@@ -177,18 +177,19 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     r[23] = 0;
 
     /* ESTA */
-    wr_le16(&r[24], 0x0000);
+    wr_le16(&r[24], BRAND_ESTA_MANUFACTURER_ID);
 
     /* ShortName[18] */
-    strncpy((char*)&r[26], ARTNET_SHORT_NAME, 17);
+    const brand_info_t *info = Brand_Current();
+    strncpy((char*)&r[26], info->model, 17);
 
     /* LongName[64] */
-    strncpy((char*)&r[44], ARTNET_LONG_NAME, 63);
+    snprintf((char *)&r[44], 64, "%s %s DMX/ArtNet/sACN Power Switches", info->manufacturer, info->model);
 
     /* NodeReport[64] */
     static uint16_t replies;
     replies = (uint16_t)((replies + 1u) % 10000u);
-    snprintf((char *)&r[108], 64, "#0001 [%04u] ADSW100", (unsigned)replies);
+    snprintf((char *)&r[108], 64, "#0001 [%04u] %s", (unsigned)replies, info->model);
 
     /* NumPortsHi/Lo – 1 DMX OUT */
     r[172] = 0;

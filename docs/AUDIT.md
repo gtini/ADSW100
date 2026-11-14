@@ -2,7 +2,22 @@
 
 Data: 14 novembre 2026. Audit statico, senza modifica o esecuzione del firmware. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nessuna compilazione o misura hardware eseguita. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
 
-## Stato corrente dopo rigenerazione e stabilizzazione
+## Prima fase funzionale: branding, EEPROM, accesso menu e CDC
+
+Versione firmware lasciata 1.4.0 durante lo sviluppo, nessun rilascio/tag definitivo 2.0.0. Base congelata `0b5fa6c` (480 MHz e stabilizzazione), programmata e verificata dall'utente su DMX, Art-Net e sACN. La nuova fase ha build/test software, non ancora collaudo hardware.
+
+- Tabella unica in cfg_io.c esposta da defs.h: AXN System/NODIM01, Videlio HMS/ADSW100, Generic/NODIM01. ESTA 0x17FA comune su istruzione utente. OEM RSH7 0x2F3F verificato specifico RSH7, non riutilizzato: placeholder 0xFFFF mantenuto. RDM/web restano futuri.
+- Migrazione legacy valida ai soli tre metadati (versione 0x02, brand 0x25, policy 0x26), commit versione per ultimo/read-back. Legacy Videlio con codice ON, secondo conferma dell'utente sulle unità installate. La copia NO_CODE locale non è rappresentativa di quelle unità e non guida più la migrazione. Nuova init AXN/codice OFF. Generic vincolato a OFF.
+- Brand/policy **solo CDC nei primi 30 s dal boot**. Sintassi RSH7 `brand?`, `brand=<id>` e forma equivalente ADSW100 `menu_code?`, `menu_code=<0|1>`. `brand=` applica default AXN 0, Videlio 1, Generic 0; AXN/Videlio permettono override. Risposte `OK REBOOT`, `ERROR`, `LOCKED`; query dopo scadenza consentite. Persistenza applicata al reboot, non cambio live.
+- usb_debug.c: RX IRQ con riga atomica e scarto overflow; servizio main non bloccante, I²C fuori ISR, TX persistente con retry BUSY e priorità sui log. Deadline assoluta HAL tick <30000, latched dopo scadenza e indipendente da enumerazione/reconnect. Main integra USB_ServiceTask in USER CODE. Il provisioning FGM precedente resta separato; non è stato implementato un bootloader.
+- user_interface.c: home dinamica con manufacturer/modello; System Setup ripristinato ai quattro campi originali senza possibilità di edit brand/codice. Il reset dal pannello preserva i metadati tramite EE_ResetUserMemory/HardFactoryReset(true), mentre l'init nuova è riservata al percorso CDC preesistente. Menu con codice invariato 1268 quando ON.
+- EE_SaveIdentity non ricarica la configurazione applicativa né cambia RAM attiva: legge/salva i soli metadati. Nessun nuovo campo o slot, nessun CRC. Normal save e reset utente non sovrascrivono impostazioni di fabbrica. Specifica e limiti in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md).
+
+Nove gruppi host: sei regressioni più BRAND_EE_TEST, UI_TEST, CDC_TEST. Coperti 256 valori legacy di versione, tuple non valide, conservazione byte per byte, errori I²C, migrazione idempotente, policy/default, reset senza alterazione identità, codice corretto/errato, comandi reali con mock USB, bordo 29999/30000 ms, frammentazione, overflow/NUL, BUSY, reconnect e wrap. Build ARM completa diretta: 149 unità, zero errori/warning. Comandi nel runner test. Nessuna certificazione fisica USB o power-cut: collaudare provisioning CDC a freddo, reset e pannello su hardware.
+
+Parser DMX/Art-Net/sACN, merge/timeout, rete e relè non modificati; Art-Net cambia soltanto descrittori branding. NFC e IOC invariati. Nessun nuovo modulo runtime, commit o tag. Le sezioni seguenti sono lo storico e non annullano le decisioni correnti.
+
+## Storico: rigenerazione e stabilizzazione della baseline
 
 L'utente ha eseguito la rigenerazione CubeMX. La precedente condizione di arresto è superata. Le sezioni storiche sotto descrivono i difetti della baseline, non lo stato attuale di ciascun file. Nessun commit/tag creato, versione firmware lasciata 1.4.0: questa è una base di sviluppo, non il rilascio 2.0.0.
 

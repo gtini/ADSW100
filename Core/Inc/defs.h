@@ -80,15 +80,51 @@
 #define EE_OFFS_OFF_TIMEOUT_S   0x23    // 1 byte: 0..30 s (timeout spegnimento relè)
 #define EE_OFFS_PROTO_PRIORITY  0x24    // 1 byte: 0..5 (ordine protocolli per Auto)
 
-// Spazio libero: 0x23 .. 0xF7
-// (nota: da v1.3.1 lo spazio libero parte da 0x25)
+/* Identità: valori marcati per distinguere metadati nuovi da byte legacy indefiniti.
+   Nessuno spostamento dei parametri 0x03..0x24. Versione scritta per ultima. */
+#define EE_OFFS_BRAND          0x25
+#define EE_OFFS_MENU_CODE      0x26
+#define EE_BRAND_TAG           0xD0u
+#define EE_MENU_CODE_TAG       0xA4u
+#define EE_VERSION_PENDING     0x00u
+/* Spazio applicativo residuo: 0x27..0x7F; EUI esclusa dalle scritture. */
 
 #define EE_INIT_VALUE			0xA55Au
-#define EE_CFG_VERSION			0x01
+#define EE_CFG_VERSION           0x02u
 
 /* ===================================================================================== */
 /*                               Variabili Globali                                       */
 /* ===================================================================================== */
+
+/* Tabella unica implementata in cfg_io.c, riutilizzabile da pannello/RDM/web.
+   Manufacturer ESTA AXN Systems confermato dall'utente per tutti i brand.
+   OEM resta il placeholder legacy non assegnato: nessun codice prodotto inventato. */
+#define BRAND_ESTA_MANUFACTURER_ID 0x17FAu
+#define BRAND_ARTNET_OEM_UNASSIGNED 0xFFFFu
+
+typedef enum
+{
+    BRAND_AXN = 0,
+    BRAND_VIDELIO = 1,
+    BRAND_GENERIC = 2,
+    BRAND_COUNT
+} brand_id_t;
+
+typedef struct
+{
+    const char *manufacturer;
+    const char *model;
+    uint8_t menu_code_default;
+} brand_info_t;
+
+extern uint8_t brand;
+extern uint8_t menu_code_required;
+/* Restituisce NULL per ID non valido; nessuna accettazione tramite fallback. */
+const brand_info_t *Brand_GetInfo(uint8_t id);
+/* Generic richiede sempre codice disabilitato; gli altri brand ammettono 0/1. */
+bool Brand_IsIdentityValid(uint8_t id, uint8_t require_code);
+/* Identità corrente per rendering: fallback sicuro AXN soltanto se RAM invalida. */
+const brand_info_t *Brand_Current(void);
 
 extern uint16_t dmx_address;
 extern uint8_t  dmx_mode;				// 0=DMX, 1=ArtNet, 2=sACN, 3 Auto

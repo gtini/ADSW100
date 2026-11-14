@@ -16,6 +16,7 @@ COMMON = r'''
 #ifndef TEST_H_FILES
 #define TEST_H_FILES
 #define INC_H_FILES_H_
+#define __MAIN_H
 #include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -92,11 +93,14 @@ I2C_HandleTypeDef hi2c1;
 static uint8_t memory[256];
 static bool fail_read,fail_write;
 static unsigned writes;
+static int fail_at = -1;
+static unsigned io_count;
+static bool io_fail(void) { return fail_at >= 0 && io_count++ == (unsigned)fail_at; }
 #define I2C_MEMADD_SIZE_8BIT 1
 static void HAL_Delay(unsigned n) {(void)n;}
-static HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h,unsigned a,unsigned t,unsigned ms) {(void)h;(void)a;(void)t;(void)ms;return HAL_OK;}
-static HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_read)return HAL_ERROR;memcpy(b,memory+m,n);return HAL_OK;}
-static HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_write)return HAL_ERROR;assert(m+n<=128);memcpy(memory+m,b,n);writes++;return HAL_OK;}
+static HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h,unsigned a,unsigned t,unsigned ms) {(void)h;(void)a;(void)t;(void)ms;return io_fail()?HAL_ERROR:HAL_OK;}
+static HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_read || io_fail())return HAL_ERROR;memcpy(b,memory+m,n);return HAL_OK;}
+static HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_write || io_fail())return HAL_ERROR;assert(m+n<=128);memcpy(memory+m,b,n);writes++;return HAL_OK;}
 static uint32_t uid[3]={1,2,3};
 #define UID_BASE ((uintptr_t)uid)
 typedef enum {GPIO_PIN_RESET,GPIO_PIN_SET} GPIO_PinState;
@@ -147,6 +151,13 @@ int main(void) {
  uint8_t pkt[530]={0};memcpy(pkt,"Art-Net",8);pkt[9]=0x50;pkt[11]=14;pkt[14]=0x34;pkt[15]=0x12;pkt[16]=2;pkt[17]=1;
  struct pbuf *p=pbuf_alloc(0,530,0);memcpy(p->payload,pkt,530);artnet_udp_recv(NULL,&pcb,p,&ip,6454);assert(!ArtNet_FindUniverse(0x1234,false));
  pkt[17]=0;p=pbuf_alloc(0,530,0);memcpy(p->payload,pkt,530);artnet_udp_recv(NULL,&pcb,p,&ip,6454);assert(ArtNet_GetSlotsView(0x1234,&out)==512);
+ for (unsigned id=0;id<BRAND_COUNT;id++) {
+  brand=id;send_artpoll_reply(&ip,6454);assert(reply[24]==0xFA && reply[25]==0x17);
+  assert(reply[20]==0xFF && reply[21]==0xFF);
+  assert(strcmp((char *)reply+26,Brand_Current()->model)==0);
+  assert(strstr((char *)reply+44,Brand_Current()->manufacturer));
+ }
+ assert(Brand_GetInfo(3)==NULL && Brand_GetInfo(255)==NULL);
  ArtNet_StopListening();assert(ArtNet_GetSlotsView(0x1234,&out)==0);
  return 0;
 }
@@ -225,22 +236,200 @@ int main(void) {
 '''
 EE = r'''
 int main(void) {
- memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK);assert(memory[2]==255 && memory[0x1B]==255);
+ memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK);assert(memory[2]==EE_CFG_VERSION && memory[0x1B]==255);
  assert(EE_LoadConfig()==HAL_OK && dmx_address==1 && dmx_mode==2);unsigned count=writes;
  assert(EE_LoadConfig()==HAL_OK && writes==count);
  uint8_t v=0;assert(EE_Write(128,&v,1)==HAL_ERROR && EE_Write(127,&v,2)==HAL_ERROR && EE_Write(0xFA,&v,1)==HAL_ERROR && writes==count);
  fail_read=true;dmx_address=100;assert(EE_LoadConfig()==HAL_ERROR && dmx_address==100);fail_read=false;
  fail_write=true;dmx_address=200;assert(EE_SaveConfig()!=HAL_OK);fail_write=false;
  assert(EE_SaveConfig()==HAL_OK);dmx_address=1;assert(EE_LoadConfig()==HAL_OK && dmx_address==200);
- assert(memory[2]==255 && memory[0x1B]==255 && memory[0xFA]==255);return 0;
+ assert(memory[2]==EE_CFG_VERSION && memory[0x1B]==255 && memory[0xFA]==255);return 0;
 }
 '''
+
+BRAND_EE = r"""
+static void expect_preserved(const uint8_t *original) {
+ for(unsigned i=0;i<128;i++) if(i!=EE_OFFS_VERSION && i!=EE_OFFS_BRAND && i!=EE_OFFS_MENU_CODE) assert(memory[i]==original[i]);
+}
+int main(void) {
+ uint8_t legacy[256];
+ memset(memory,255,sizeof memory);assert(EE_LoadConfig()==HAL_ERROR && writes==0);
+ assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ assert(brand==BRAND_AXN && menu_code_required==0);
+ assert(memory[EE_OFFS_BRAND]==EE_BRAND_TAG && memory[EE_OFFS_MENU_CODE]==EE_MENU_CODE_TAG);
+ dmx_address=407;dmx_mode=3;artnet_universe=12345;sacn_universe=45000;sacn_min_prio=135;
+ off_timeout_s=17;proto_priority=5;ip_address=0x12345678;dns1=0x87654321;
+ assert(EE_SaveConfig()==HAL_OK);memcpy(legacy,memory,256);
+ legacy[EE_OFFS_VERSION]=2;legacy[EE_OFFS_BRAND]=255;legacy[EE_OFFS_MENU_CODE]=255;
+ for(unsigned version=0;version<256;version++) {
+  memcpy(memory,legacy,256);memory[2]=version;uint8_t original[128];memcpy(original,memory,128);
+  assert(EE_LoadConfig()==HAL_OK && brand==BRAND_VIDELIO && menu_code_required==1);
+  assert(dmx_address==407 && dmx_mode==3 && artnet_universe==12345 && sacn_universe==45000 && sacn_min_prio==135);
+  assert(off_timeout_s==17 && proto_priority==5 && ip_address==0x12345678 && dns1==0x87654321);
+  expect_preserved(original);unsigned n=writes;assert(EE_LoadConfig()==HAL_OK && writes==n);
+ }
+ /* Guasto a ogni operazione I/O della migrazione, compresi read-back e commit. */
+ bool reached_end=false;
+ for(int cut=0;cut<40;cut++) {
+  memcpy(memory,legacy,256);brand=BRAND_AXN;menu_code_required=1;io_count=0;fail_at=cut;
+  HAL_StatusTypeDef st=EE_LoadConfig();unsigned operations=io_count;fail_at=-1;
+  expect_preserved(legacy);
+  if(st==HAL_OK) {assert(brand==BRAND_VIDELIO && menu_code_required==1);}
+  else {assert(brand==BRAND_AXN && menu_code_required==1);}
+  assert(EE_LoadConfig()==HAL_OK && brand==BRAND_VIDELIO && menu_code_required==1);
+  expect_preserved(legacy);unsigned n=writes;assert(EE_LoadConfig()==HAL_OK && writes==n);
+  if(operations<=(unsigned)cut) {reached_end=true;break;}
+ }
+ assert(reached_end);
+ for(unsigned id=0;id<BRAND_COUNT;id++) for(unsigned code=0;code<2;code++) {
+  if(id==BRAND_GENERIC && code) {assert(EE_SaveIdentity(id,code)==HAL_ERROR);continue;}
+  uint8_t active_brand=brand,active_code=menu_code_required;
+  assert(EE_SaveIdentity(id,code)==HAL_OK);assert(brand==active_brand && menu_code_required==active_code);
+  assert(EE_LoadConfig()==HAL_OK && brand==id && menu_code_required==code);
+  assert(strcmp(Brand_Current()->model,id==BRAND_VIDELIO?"ADSW100":"NODIM01")==0);expect_preserved(legacy);
+ }
+ active_proto=2;dmx_address=408;assert(EE_SaveIdentity(BRAND_AXN,1)==HAL_OK);assert(active_proto==2 && dmx_address==408);dmx_address=407;
+ /* Tutte le transizioni ammesse restano recuperabili dopo un errore I2C,
+    incluso Generic/OFF senza stati pendenti Generic/ON. */
+ for(unsigned from=0;from<BRAND_COUNT;from++) for(unsigned fc=0;fc<2;fc++) {
+  if(!Brand_IsIdentityValid(from,fc)) continue;
+  assert(EE_SaveIdentity(from,fc)==HAL_OK && EE_LoadConfig()==HAL_OK);
+  uint8_t original[256];memcpy(original,memory,256);
+  for(unsigned to=0;to<BRAND_COUNT;to++) for(unsigned tc=0;tc<2;tc++) {
+   if(!Brand_IsIdentityValid(to,tc))continue;
+   for(int cut=0;cut<40;cut++) {
+    memcpy(memory,original,256);io_count=0;fail_at=cut;
+    (void)EE_SaveIdentity(to,tc);unsigned operations=io_count;fail_at=-1;
+    expect_preserved(original);assert(EE_LoadConfig()==HAL_OK && Brand_IsIdentityValid(brand,menu_code_required));
+    unsigned before=writes;assert(EE_LoadConfig()==HAL_OK && writes==before);
+    if(operations<=(unsigned)cut) break;
+   }
+  }
+ }
+ assert(EE_SaveIdentity(BRAND_AXN,1)==HAL_OK && EE_LoadConfig()==HAL_OK);
+ unsigned n=writes;assert(EE_SaveIdentity(3,0)==HAL_ERROR && EE_SaveIdentity(255,1)==HAL_ERROR && EE_SaveIdentity(0,2)==HAL_ERROR && writes==n);
+ for(unsigned raw=0;raw<256;raw++) {
+  if(raw>=EE_BRAND_TAG && raw<EE_BRAND_TAG+BRAND_COUNT) continue;
+  memory[EE_OFFS_BRAND]=raw;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
+ }
+ memory[EE_OFFS_BRAND]=EE_BRAND_TAG;
+ for(unsigned raw=0;raw<256;raw++) {
+  if(raw==EE_MENU_CODE_TAG || raw==(EE_MENU_CODE_TAG|1)) continue;
+  memory[EE_OFFS_MENU_CODE]=raw;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
+ }
+ memory[EE_OFFS_MENU_CODE]=EE_MENU_CODE_TAG;memory[2]=3;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
+ memcpy(memory,legacy,256);memory[0]=0;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
+ return 0;
+}
+"""
+
+UI = r"""
+int main(void) {
+ memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ menu_code_required=0;g_ui.state=UI_HOME;UI_RequestMenu();assert(g_ui.state==UI_MENU && g_ui.sel==0);
+ menu_code_required=1;g_ui.state=UI_HOME;UI_RequestMenu();assert(g_ui.state==UI_PAGE_UNLOCK);
+ s_unlock_digits[0]=UNLOCK_CODE_1;s_unlock_digits[1]=UNLOCK_CODE_2;s_unlock_digits[2]=UNLOCK_CODE_3;s_unlock_digits[3]=UNLOCK_CODE_4;s_unlock_pos=3;
+ handle_page_unlock_event(EVT_BTN_SHORT);assert(g_ui.state==UI_MENU);
+ UI_RequestMenu();s_unlock_pos=3;handle_page_unlock_event(EVT_BTN_SHORT);assert(g_ui.state==UI_HOME);
+ /* System Setup conserva i quattro campi originali: nessun edit identità. */
+ uint8_t saved_brand=brand,saved_code=menu_code_required;
+ g_ui.editing=false;s_sys_sel=0;
+ for(unsigned i=0;i<8;i++) {handle_page_sys_event(EVT_ENC_RIGHT);assert(s_sys_sel<4);}
+ assert(brand==saved_brand && menu_code_required==saved_code);
+ assert(EE_SaveIdentity(BRAND_VIDELIO,1)==HAL_OK && EE_LoadConfig()==HAL_OK);
+ dmx_address=100;assert(EE_SaveConfig()==HAL_OK);
+ assert(EE_ResetUserMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ assert(brand==BRAND_VIDELIO && menu_code_required==1 && dmx_address==1);
+ return 0;
+}
+"""
+
+def ui_functions():
+    """Compila le tre funzioni reali isolate con mock, senza riscriverne la logica."""
+    source = (ROOT/'Core/Src/user_interface.c').read_text()
+    text = r"""
+#include "user_interface.h"
+static struct { ui_state_t state;bool editing,force_redraw;uint8_t sel; } g_ui;
+static uint8_t s_unlock_pos,s_unlock_digits[4],s_sys_sel;
+static void LCD_DrawToast(const char *s) {(void)s;}
+static void LCD_EditMarker(uint8_t r,bool e) {(void)r;(void)e;}
+static void HardFactoryReset(bool preserve) {assert(preserve);}
+"""
+    for signature in ['static void UI_RequestMenu(void)', 'static void handle_page_unlock_event(ui_event_t ev)',
+                      'static void handle_page_sys_event(ui_event_t ev)']:
+        start = source.index(signature)
+        end = source.index('{', start)
+        depth = 1
+        end += 1
+        while depth:
+            if source[end] == '{': depth += 1
+            elif source[end] == '}': depth -= 1
+            end += 1
+        text += source[start:end]+'\n'
+    return text
+
+CDC_MOCK = r"""
+#undef USB_Printf
+#define USBD_STATE_CONFIGURED 1
+#define USBD_OK 0
+#define USBD_BUSY 1
+typedef struct {uint32_t TxState;} USBD_CDC_HandleTypeDef;
+typedef struct {uint8_t dev_state;void *pClassData;} USBD_HandleTypeDef;
+static USBD_CDC_HandleTypeDef cdc;
+USBD_HandleTypeDef hUsbDeviceFS={USBD_STATE_CONFIGURED,&cdc};
+static char sent[256];
+static unsigned tx_calls;
+static uint8_t CDC_Transmit_FS(uint8_t *b,uint16_t n) {
+ if(cdc.TxState)return USBD_BUSY;
+ assert(n<sizeof sent);memcpy(sent,b,n);sent[n]=0;cdc.TxState=1;tx_calls++;return USBD_OK;
+}
+"""
+CDC = r"""
+static void command(const char *line,const char *expected) {
+ cdc.TxState=0;unsigned before=writes;
+ USB_Debug_OnRxBytes((const uint8_t *)line,(uint32_t)strlen(line));assert(writes==before);
+ USB_ServiceTask();assert(s_service_response_pending);USB_ServiceTask();assert(strcmp(sent,expected)==0);
+ cdc.TxState=0;
+}
+int main(void) {
+ memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ assert(brand==BRAND_AXN && menu_code_required==0);tick=1;
+ command("brand?\r\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
+ command("brand=1\n","OK REBOOT\r\n");assert(brand==BRAND_AXN && menu_code_required==0);
+ command("brand?\n","brand=1\r\n");command("menu_code?\n","menu_code=1\r\n");
+ command("menu_code=0\n","OK REBOOT\r\n");command("menu_code?\n","menu_code=0\r\n");
+ command("brand=2\n","OK REBOOT\r\n");command("menu_code=1\n","ERROR\r\n");
+ command("brand=0\n","OK REBOOT\r\n");command("menu_code?\n","menu_code=0\r\n");
+ command("menu_code=1\n","OK REBOOT\r\n");assert(EE_LoadConfig()==HAL_OK && menu_code_required==1);
+ unsigned before=writes;command("brand=3\n","ERROR\r\n");command("brand=-1\n","ERROR\r\n");
+ command("brand=9999999999\n","ERROR\r\n");command("menu_code=2\n","ERROR\r\n");assert(writes==before);
+ command("brand=001\n","OK REBOOT\r\n");command("menu_code?\n","menu_code=1\r\n");
+ fail_write=true;command("brand=0\n","ERROR\r\n");fail_write=false;command("brand?\n","brand=1\r\n");
+ fail_read=true;command("brand?\n","ERROR\r\n");fail_read=false;
+ char overflow[220];memset(overflow,'X',sizeof overflow);memcpy(overflow+200,"brand=0\n",8);overflow[208]=0;
+ before=writes;command(overflow,"ERROR\r\n");assert(writes==before);
+ const uint8_t nul[]={'b','r','a','n','d','=','0',0,'\n'};USB_Debug_OnRxBytes(nul,sizeof nul);USB_ServiceTask();USB_ServiceTask();assert(strcmp(sent,"ERROR\r\n")==0);cdc.TxState=0;
+ tick=29999;command("brand=0\n","OK REBOOT\r\n");
+ /* Frammenti completi soltanto al limite: rifiutati. */
+ USB_Debug_OnRxBytes((const uint8_t *)"brand=",6);USB_ServiceTask();assert(!s_service_response_pending);
+ tick=30000;USB_Debug_OnRxBytes((const uint8_t *)"1\n",2);before=writes;USB_ServiceTask();USB_ServiceTask();assert(strcmp(sent,"LOCKED\r\n")==0 && writes==before);cdc.TxState=0;
+ command("brand=2\n","LOCKED\r\n");command("menu_code=1\n","LOCKED\r\n");
+ command("brand?\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
+ hUsbDeviceFS.dev_state=0;USB_ServiceTask();hUsbDeviceFS.dev_state=USBD_STATE_CONFIGURED;
+ tick=1;command("brand=1\n","LOCKED\r\n"); /* Simula wrap: finestra non riaperta. */
+ /* BUSY non perde la risposta e non permette a log di scavalcarla. */
+ USB_Debug_OnRxBytes((const uint8_t *)"brand?\n",7);USB_ServiceTask();unsigned sends=tx_calls;
+ cdc.TxState=1;USB_ServiceTask();USB_Send("debug");assert(tx_calls==sends && s_service_response_pending);
+ cdc.TxState=0;USB_ServiceTask();assert(strcmp(sent,"brand=0\r\n")==0);
+ return 0;
+}
+"""
 
 def run():
     with tempfile.TemporaryDirectory(prefix='adsw100-tests-') as folder:
         tmp = Path(folder)
         (tmp / 'h_files.h').write_text(COMMON)
-        for name in ['stm32h7xx_hal.h', 'main.h', 'ethernetif.h']:
+        for name in ['stm32h7xx_hal.h', 'main.h', 'ethernetif.h', 'usb_device.h', 'usbd_cdc_if.h', 'usbd_cdc.h']:
             (tmp / name).write_text('')
         for name in ['udp.h', 'pbuf.h', 'netif.h', 'ip4_addr.h', 'ip_addr.h', 'igmp.h']:
             (tmp / 'lwip').mkdir(exist_ok=True)
@@ -254,10 +443,15 @@ def run():
         (tmp / 'main.h').write_text('\n'.join(gpio))
         cases = [('ART_TEST', 'artnet.c', ART), ('SAC_TEST', 'sacn.c', SAC),
                  ('RELAY_TEST', 'relay_driver.c', RELAY), ('CFG_TEST', 'cfg_io.c', CFG),
-                 ('DMX_TEST', 'dmx_512.c', DMX), ('EE_TEST', 'eeprom.c', EE)]
+                 ('DMX_TEST', 'dmx_512.c', DMX), ('EE_TEST', 'eeprom.c', EE),
+                 ('BRAND_EE_TEST', 'eeprom.c', BRAND_EE), ('UI_TEST', 'eeprom.c', UI), ('CDC_TEST', 'usb_debug.c', CDC)]
         for define, filename, body in cases:
             harness = tmp / 'test.c'
-            harness.write_text(f'#define {define}\n#include "h_files.h"\n#include "{ROOT / "Core/Src" / filename}"\n' + body)
+            identity = f'#include "{ROOT / "Core/Src/cfg_io.c"}"\n' if filename in ('artnet.c', 'eeprom.c', 'usb_debug.c') else ''
+            ui = ui_functions() if define == 'UI_TEST' else ''
+            if define == 'CDC_TEST':
+                identity += f'#include "{ROOT / "Core/Src/eeprom.c"}"\n' + CDC_MOCK
+            harness.write_text(f'#define {define}\n#include "h_files.h"\n' + identity + f'#include "{ROOT / "Core/Src" / filename}"\n' + ui + body)
             exe = tmp / 'test'
             subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Werror=implicit-function-declaration',
                             '-I'+str(tmp), '-I'+str(ROOT/'Core/Inc'), str(harness), '-o', str(exe)], check=True)

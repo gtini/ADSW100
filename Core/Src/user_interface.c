@@ -102,7 +102,7 @@ static bool    g_mac_valid = false;
 static uint8_t s_net_sel = 0;           // 0..5 (DHCP,IP,Subnet,DNS1,DNS2,GW)
 static uint8_t s_ip_octet_sel = 0;      // 0..3
 static uint8_t s_sacn_sel = 0;          // 0..2 (Universe, Cast, Priority)
-static uint8_t s_sys_sel = 0;           // 0..3 (Backlight, OFF Timeout, Priority, Init Memory)
+static uint8_t s_sys_sel = 0;           // 0..3: backlight, OFF, priorità, reset utente
 
 // Codice di sblocco (4 cifre)
 static uint8_t s_unlock_digits[4] = {0,0,0,0};
@@ -380,8 +380,11 @@ static void render_home(void)
 	if (full)
 	{
 		// Disegno solo la parte statica
-		LCD_PutStr(3, 0, "Videlio HMS");
-		LCD_PutStr(3, 1, "Ver: " FW_VERSION_STR);
+		const brand_info_t *info = Brand_Current();
+        char identity[18];
+        LCD_PutStr(0, 0, info->manufacturer);
+        snprintf(identity, sizeof identity, "%s v%s", info->model, FW_VERSION_STR);
+        LCD_PutStr(0, 1, identity);
 
 		// invalida per forzare il primo update dei campi dinamici
 		s_home.mode         = 0xFF;
@@ -577,6 +580,7 @@ static void render_page_sacn(void)
     LCD_PutStr(0, 7, g_ui.editing ? "Click=Save" : "Long=Back");
 }
 
+/* Solo impostazioni utente: identità e policy di accesso appartengono al servizio CDC. */
 static void render_page_sys(void)
 {
     LCD_PutStrCentered(0, "System Setup");
@@ -1236,10 +1240,9 @@ static void handle_page_sys_event(ui_event_t ev)
             else
             {
                 // Init Memory
-                HardFactoryReset();
-                (void)EE_LoadConfig();
-                NET_ScheduleApply();
-                LCD_DrawToast("Memory init OK");
+                HardFactoryReset(true);
+                /* Un reset riuscito riavvia la MCU e non ritorna qui. */
+                LCD_DrawToast("EEPROM error");
                 g_ui.force_redraw = true;
             }
         }
@@ -1429,6 +1432,23 @@ void InitUserInterface(void)
 /* ===================================================================================== */
 /*                               UI Task (10mS)                                          */
 /* ===================================================================================== */
+/* Click lungo HOME: richiesta persistente oppure accesso diretto NO_CODE. */
+static void UI_RequestMenu(void)
+{
+    s_unlock_pos = 0;
+    memset(s_unlock_digits, 0, sizeof s_unlock_digits);
+    if (menu_code_required)
+    {
+        g_ui.state = UI_PAGE_UNLOCK;
+    }
+    else
+    {
+        g_ui.state = UI_MENU;
+        g_ui.sel = 0;
+    }
+    g_ui.force_redraw = true;
+}
+
 void UserInterfaceTask(void)
 {
     static ui_state_t prev = (ui_state_t)-1;
@@ -1496,12 +1516,7 @@ void UserInterfaceTask(void)
             }
             else if (ev == EVT_BTN_LONG)
             {
-                // Dalla HOME: click lungo --> richiesta codice
-                s_unlock_pos = 0;
-                s_unlock_digits[0] = s_unlock_digits[1] =
-                s_unlock_digits[2] = s_unlock_digits[3] = 0;
-                g_ui.state = UI_PAGE_UNLOCK;
-                g_ui.force_redraw = true;
+                UI_RequestMenu();
             }
             break;
 

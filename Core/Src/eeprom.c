@@ -208,20 +208,74 @@ static void EE_Put32(uint8_t *b, uint32_t v)
     b[3] = v;
 }
 
-/* Lettura unica verificata; nessuna riparazione persistente o migrazione. */
-HAL_StatusTypeDef EE_LoadConfig(void)
+/* Scrive soltanto i tre metadati, senza toccare magic o payload legacy.
+   Versione invalidata prima e commessa per ultima; ogni scrittura ha read-back.
+   Un'interruzione non modifica i parametri installati. */
+static HAL_StatusTypeDef EE_StoreIdentity(uint8_t new_brand, uint8_t require_code)
 {
-    uint8_t b[EE_OFFS_PROTO_PRIORITY + 1];
-    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (!Brand_IsIdentityValid(new_brand, require_code)) return HAL_ERROR;
+    HAL_StatusTypeDef st = EE_WriteU8(EE_OFFS_VERSION, EE_VERSION_PENDING);
     if (st != HAL_OK) return st;
-    if (EE_U16(b) != EE_INIT_VALUE || b[EE_OFFS_USE_DHCP] > 1 ||
+    /* Verso Generic scrive prima OFF: nessuna coppia pendente Generic/ON.
+       Dagli altri brand scrive prima l'ID, così anche il percorso inverso resta valido. */
+    const uint8_t offsets[2] = {EE_OFFS_BRAND, EE_OFFS_MENU_CODE};
+    const uint8_t values[2] = {(uint8_t)(EE_BRAND_TAG | new_brand),
+                               (uint8_t)(EE_MENU_CODE_TAG | require_code)};
+    unsigned first = new_brand == BRAND_GENERIC ? 1u : 0u;
+    for (unsigned step = 0; step < 2; ++step)
+    {
+        unsigned index = step ^ first;
+        st = EE_WriteU8(offsets[index], values[index]);
+        if (st != HAL_OK) return st;
+    }
+    return EE_WriteU8(EE_OFFS_VERSION, EE_CFG_VERSION);
+}
+
+/* Classifica la tupla, mai il solo byte 0x02. I valori marcati incoerenti
+   sono rifiutati, non corretti sostituendo la configurazione con default. */
+static HAL_StatusTypeDef EE_LoadIdentity(uint8_t *b, uint8_t *id, uint8_t *code)
+{
+    bool brand_tag = (b[EE_OFFS_BRAND] & 0xFCu) == EE_BRAND_TAG;
+    bool code_tag = (b[EE_OFFS_MENU_CODE] & 0xFEu) == EE_MENU_CODE_TAG;
+    if (brand_tag && code_tag)
+    {
+        *id = b[EE_OFFS_BRAND] & 3u;
+        *code = b[EE_OFFS_MENU_CODE] & 1u;
+        if (!Brand_IsIdentityValid(*id, *code)) return HAL_ERROR;
+        if (b[EE_OFFS_VERSION] == EE_CFG_VERSION) return HAL_OK;
+        if (b[EE_OFFS_VERSION] != EE_VERSION_PENDING) return HAL_ERROR;
+        /* Riprende un commit interrotto dopo la verifica di entrambi i campi. */
+        return EE_WriteU8(EE_OFFS_VERSION, EE_CFG_VERSION);
+    }
+    if (b[EE_OFFS_VERSION] == EE_CFG_VERSION && (brand_tag || code_tag)) return HAL_ERROR;
+    /* Layout/magic legacy validati: Videlio con codice, come i dispositivi installati. */
+    *id = BRAND_VIDELIO;
+    *code = Brand_GetInfo(BRAND_VIDELIO)->menu_code_default;
+    return EE_StoreIdentity(*id, *code);
+}
+
+/* Stessi range legacy della baseline; nessuna normalizzazione persistente. */
+static bool EE_LegacyValid(const uint8_t *b)
+{
+    return !(EE_U16(b) != EE_INIT_VALUE || b[EE_OFFS_USE_DHCP] > 1 ||
         EE_U16(b + EE_OFFS_DMX_ADDR) < 1 || EE_U16(b + EE_OFFS_DMX_ADDR) > 512 ||
         b[EE_OFFS_DMX_MODE] > 3 || EE_U16(b + EE_OFFS_ARTNET_UNI) > 32767 ||
         EE_U16(b + EE_OFFS_SACN_UNI) < 1 || EE_U16(b + EE_OFFS_SACN_UNI) > 63999 ||
-        b[EE_OFFS_SACN_TRANSPORT] > 1 || b[EE_OFFS_SACN_MIN_PRIO] > 200)
-    {
-        return HAL_ERROR;
-    }
+        b[EE_OFFS_SACN_TRANSPORT] > 1 || b[EE_OFFS_SACN_MIN_PRIO] > 200);
+}
+
+/* Lettura verificata e migrazione dei soli metadati; pubblicazione RAM dopo successo. */
+HAL_StatusTypeDef EE_LoadConfig(void)
+{
+    uint8_t b[EE_OFFS_MENU_CODE + 1];
+    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (st != HAL_OK) return st;
+    if (!EE_LegacyValid(b)) return HAL_ERROR;
+    uint8_t loaded_brand, loaded_code;
+    st = EE_LoadIdentity(b, &loaded_brand, &loaded_code);
+    if (st != HAL_OK) return st;
+    brand = loaded_brand;
+    menu_code_required = loaded_code;
     use_dhcp = b[EE_OFFS_USE_DHCP];
     ip_address = EE_U32(b + EE_OFFS_IP);
     net_mask = EE_U32(b + EE_OFFS_NETMASK);
@@ -243,14 +297,33 @@ HAL_StatusTypeDef EE_LoadConfig(void)
     return HAL_OK;
 }
 
-/* Mantiene gap e versione indefinita; salva soltanto parametri legacy.
+/* Mantiene il gap legacy e i metadati correnti; salva i parametri esistenti.
    Il formato non è atomico a power-cut: nessun nuovo slot autorizzato. */
-static HAL_StatusTypeDef EE_StoreConfig(bool defaults)
+static HAL_StatusTypeDef EE_StoreConfig(bool defaults, bool preserve_identity)
 {
     uint8_t b[EE_OFFS_PROTO_PRIORITY + 1], verify[sizeof b];
     HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
     if (st != HAL_OK) return st;
-    if (!defaults && EE_U16(b) != EE_INIT_VALUE) return HAL_ERROR;
+    if (!defaults)
+    {
+        uint8_t identity[2];
+        if (EE_U16(b) != EE_INIT_VALUE || b[EE_OFFS_VERSION] != EE_CFG_VERSION) return HAL_ERROR;
+        st = EE_Read(EE_OFFS_BRAND, identity, sizeof identity);
+        if (st != HAL_OK) return st;
+        if (identity[0] != (EE_BRAND_TAG | brand) || identity[1] != (EE_MENU_CODE_TAG | menu_code_required)) return HAL_ERROR;
+    }
+    else
+    {
+        if (preserve_identity)
+        {
+            uint8_t stored_brand, stored_code;
+            st = EE_ReadIdentity(&stored_brand, &stored_code);
+            if (st != HAL_OK) return st;
+        }
+        /* Reset esplicito: invalida magic prima di cambiare i default. */
+        st = EE_WriteU16(EE_OFFS_INIT, 0);
+        if (st != HAL_OK) return st;
+    }
     EE_Put16(b, EE_INIT_VALUE);
     b[EE_OFFS_USE_DHCP] = defaults ? CFG_DEFAULT_USE_DHCP : use_dhcp;
     EE_Put32(b + EE_OFFS_IP, defaults ? CFG_DEFAULT_IP : ip_address);
@@ -270,12 +343,23 @@ static HAL_StatusTypeDef EE_StoreConfig(bool defaults)
     /* Non riscrive i byte riservati 0x02 e 0x1B. */
     for (unsigned i = 0; i < sizeof b; ++i)
     {
-        if (i == EE_OFFS_VERSION || i == 0x1B) continue;
+        if (i == EE_OFFS_VERSION || i == 0x1B || (defaults && i < 2)) continue;
         uint8_t old;
         st = EE_Read(i, &old, 1);
         if (st != HAL_OK) return st;
         if (old == b[i]) continue;
         st = EE_Write(i, b + i, 1);
+        if (st != HAL_OK) return st;
+    }
+    if (defaults)
+    {
+        if (!preserve_identity)
+        {
+            st = EE_StoreIdentity(BRAND_AXN, Brand_GetInfo(BRAND_AXN)->menu_code_default);
+            if (st != HAL_OK) return st;
+            b[EE_OFFS_VERSION] = EE_CFG_VERSION;
+        }
+        st = EE_WriteU16(EE_OFFS_INIT, EE_INIT_VALUE);
         if (st != HAL_OK) return st;
     }
     st = EE_Read(0, verify, sizeof verify);
@@ -286,15 +370,56 @@ static HAL_StatusTypeDef EE_StoreConfig(bool defaults)
 /* Solo factory reset esplicito: nessun richiamo automatico dal load. */
 HAL_StatusTypeDef EE_InitMemory(void)
 {
-    return EE_StoreConfig(true);
+    return EE_StoreConfig(true, false);
+}
+
+HAL_StatusTypeDef EE_ResetUserMemory(void)
+{
+    return EE_StoreConfig(true, true);
+}
+
+HAL_StatusTypeDef EE_ReadIdentity(uint8_t *stored_brand, uint8_t *require_code)
+{
+    if (!stored_brand || !require_code) return HAL_ERROR;
+    uint8_t b[EE_OFFS_MENU_CODE + 1];
+    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (st != HAL_OK) return st;
+    if (!EE_LegacyValid(b) || b[EE_OFFS_VERSION] != EE_CFG_VERSION ||
+        (b[EE_OFFS_BRAND] & 0xFCu) != EE_BRAND_TAG ||
+        (b[EE_OFFS_MENU_CODE] & 0xFEu) != EE_MENU_CODE_TAG ||
+        !Brand_IsIdentityValid(b[EE_OFFS_BRAND] & 3u, b[EE_OFFS_MENU_CODE] & 1u)) return HAL_ERROR;
+    *stored_brand = b[EE_OFFS_BRAND] & 3u;
+    *require_code = b[EE_OFFS_MENU_CODE] & 1u;
+    return HAL_OK;
+}
+
+/* Valida configurazione e metadati presenti prima di consentire modifiche.
+   Un save identico non consuma cicli EEPROM. */
+HAL_StatusTypeDef EE_SaveIdentity(uint8_t new_brand, uint8_t require_code)
+{
+    if (!Brand_IsIdentityValid(new_brand, require_code)) return HAL_ERROR;
+    uint8_t b[EE_OFFS_MENU_CODE + 1];
+    uint8_t stored_brand, stored_code;
+    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (st != HAL_OK) return st;
+    if (!EE_LegacyValid(b)) return HAL_ERROR;
+    st = EE_LoadIdentity(b, &stored_brand, &stored_code);
+    if (st != HAL_OK) return st;
+    if (stored_brand != new_brand || stored_code != require_code)
+    {
+        st = EE_StoreIdentity(new_brand, require_code);
+        if (st != HAL_OK) return st;
+    }
+    /* Come RSH7: i descrittori attivi cambiano soltanto al riavvio. */
+    return HAL_OK;
 }
 
 HAL_StatusTypeDef EE_SaveConfig(void)
 {
-    if (use_dhcp > 1 || dmx_address < 1 || dmx_address > 512 || dmx_mode > 3 ||
+    if (!Brand_IsIdentityValid(brand, menu_code_required) || use_dhcp > 1 || dmx_address < 1 || dmx_address > 512 || dmx_mode > 3 ||
         artnet_universe > 32767 || sacn_universe < 1 || sacn_universe > 63999 ||
         sacn_transport > 1 || sacn_min_prio > 200 || off_timeout_s > 30 || proto_priority > 5) return HAL_ERROR;
-    return EE_StoreConfig(false);
+    return EE_StoreConfig(false, false);
 }
 
 void EE_BusScan(void)

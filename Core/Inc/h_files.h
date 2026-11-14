@@ -31,7 +31,8 @@
 
 // Funzioni pubbliche  di main.c
 
-void HardFactoryReset(void);
+/* true: reset utente preservando identità di fabbrica; false: inizializzazione esplicita. */
+void HardFactoryReset(bool preserve_identity);
 void LCD_Backlight_Wake(void);
 
 typedef enum {

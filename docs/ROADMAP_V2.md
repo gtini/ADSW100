@@ -2,6 +2,26 @@
 
 Stato al 14 novembre 2026: base clock/stabilizzazione implementata e verificata con build/test software; nuove funzionalità v2 ancora da sviluppare. Le caselle software chiuse attestano implementazione/verifica statica o host; ogni verifica hardware resta un gate separato. Audit in [AUDIT.md](AUDIT.md), persistenza in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md). L'utente ha successivamente autorizzato porting 480 MHz e stabilizzazione, senza commit/tag o nuove funzionalità. Rigenerazione CubeMX eseguita dall’utente; arresto superato e stabilizzazione ripresa.
 
+## Prima fase funzionale approvata — branding/EEPROM/menu
+
+Baseline `0b5fa6c` validata su hardware dall'utente. Le caselle seguenti indicano implementazione e test software; nuovo collaudo hardware separato.
+
+- [x] Tabella centralizzata tre brand, manufacturer e modelli; default nuovo AXN.
+- [x] ESTA utente 0x17FA comune, integrato nel PollReply; nessun ID inventato.
+- [x] Verificato OEM RSH7 0x2F3F specifico altro prodotto; non riutilizzato.
+- [x] Versione struttura 2 a 0x02, brand a 0x25, policy menu a 0x26, discriminanti incorporati.
+- [x] Migrazione legacy valida a Videlio/codice ON su conferma utente; payload invariato, versione commessa per ultima e read-back.
+- [x] Factory init esplicito AXN/codice OFF, senza auto-init su errore.
+- [x] Brand/menu_code solo CDC entro 30 s, applicazione al reboot; accesso pannello diretto o codice 1268 conservato.
+- [x] Nove gruppi test host PASS, fault injection I²C e tutti i 256 valori versione legacy.
+- [x] Build ARM 149 unità, zero errori/warning; regressioni software protocolli invariate.
+- [ ] Collaudare display, dump legacy e power-cut fisico della nuova migrazione.
+- [ ] Ottenere OEM ADSW100/NODIM01; il placeholder preesistente non è un'assegnazione.
+
+Default CDC `brand=`: AXN codice OFF, Videlio ON, Generic sempre OFF. AXN/Videlio ammettono override nella medesima finestra. UI senza voci identità; reset utente preserva i valori persistiti. Query `brand?`/`menu_code?` sempre disponibili. RSH7 fornisce la sintassi `brand=`/`OK REBOOT`; `menu_code=` segue la stessa forma.
+
+RDM, web, bootloader, nuovi PID/ID uploader e nuove funzioni NFC restano esclusi. La precedente decisione di rinviare ogni migrazione è superata esclusivamente per i tre campi ora autorizzati; nessun doppio slot/CRC viene introdotto.
+
 ## Fase 0 — baseline e decisioni
 
 - [ ] Approvare piano e perimetro incrementale; conservare commit 7cbf16e e non creare tag finale.
@@ -28,7 +48,7 @@ Verifica: oscilloscopio bobine/enable, manuale durante impulso, inversioni rapid
 ## Fase 2 — EEPROM e configurazione coerente
 
 - [x] Implementare errori I/O espliciti e load senza scritture implicite.
-- [x] Preservare la mappa legacy entro 128 byte; nessun nuovo campo, doppio slot o migrazione automatica. Migrazione Brand1 rinviata.
+- [x] Mappa legacy preservata entro 128 byte; aggiunti soltanto i due byte identità e utilizzata la versione riservata, come autorizzato nella prima fase funzionale. Nessun doppio slot/CRC.
 - [ ] Proteggere EUI e configurazioni esistenti; verificare errori I²C e limiti power-cut del formato legacy.
 - [x] Validazione comune del candidato integrata in cfg_io/eeprom esistenti, con apply atomico e save controllato.
 - [x] Correggere conversioni IP senza alterare byte/significato delle configurazioni installate.
@@ -62,9 +82,10 @@ Verifica: USB enumerazione/trasferimenti, I²C, DMX e rete sotto carico; confron
 
 ## Fase 5 — branding e identificativi
 
-- [ ] Tabella unica: Brand0 AXN System/NODIM01; Brand1 Videlio HMS/ADSW100; Brand2 Generic/NODIM01.
-- [ ] Testi pannello, web, RDM e Art-Net coerenti con tabella e limiti stringhe.
-- [ ] Preferenza richiesta codice menu abilitabile/disabilitabile; preservare comportamento legacy verificato.
+- [x] Tabella unica: Brand0 AXN System/NODIM01; Brand1 Videlio HMS/ADSW100; Brand2 Generic/NODIM01.
+- [x] Testi pannello e Art-Net dalla tabella unica; API pronta per RDM/web futuri.
+- [ ] Integrare i testi in RDM/web quando verranno implementati.
+- [x] Preferenza persistente codice menu, migrazione legacy Videlio con codice ON e provisioning CDC verificati.
 - [ ] Verificare Manufacturer ESTA e OEM Art-Net realmente assegnati per ogni brand; nessun ID inventato.
 - [ ] Censire INI e ID successivi: 94 DRV_STG4 e 95 URC01 risultano occupati nell'uploader; 96 resta candidato, non assegnazione.
 - [ ] Distinguere ID uploader legacy, Product/Target ST2FW, Model ID RDM e UID; registrare decisioni approvate.

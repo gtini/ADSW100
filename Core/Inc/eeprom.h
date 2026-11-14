@@ -23,7 +23,14 @@ HAL_StatusTypeDef EE_GetLocalMAC48(uint8_t mac[6]);
 
 HAL_StatusTypeDef EE_LoadConfig(void);
 HAL_StatusTypeDef EE_SaveConfig(void);
+/* Main, solo servizio CDC: salva identità/policy per il prossimo avvio.
+   Il chiamante impone la finestra di fabbrica; non cambia la RAM attiva. */
+HAL_StatusTypeDef EE_SaveIdentity(uint8_t new_brand, uint8_t require_code);
 HAL_StatusTypeDef EE_InitMemory(void);
+/* Lettura metadati commessi senza migrazione, pubblicazione RAM o scritture. */
+HAL_StatusTypeDef EE_ReadIdentity(uint8_t *stored_brand, uint8_t *require_code);
+/* Reset parametri utente preservando versione, brand e policy di fabbrica. */
+HAL_StatusTypeDef EE_ResetUserMemory(void);
 
 void EE_BusScan(void);
 void EE_DumpTail(void);

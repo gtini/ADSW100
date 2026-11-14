@@ -21,8 +21,7 @@ extern "C" {
 #define ARTNET_SLOTS_MAX       512
 #define ARTNET_UDP_PORT        6454
 
-#define ARTNET_SHORT_NAME      "ADSW100"
-#define ARTNET_LONG_NAME       "Viedelio HMS DMX/ArtNet/sACN Power Switches"
+/* Nomi e identificativi condivisi tramite Brand_Current() in defs.h. */
 
 /* ===== Public data structures ===== */
 typedef struct

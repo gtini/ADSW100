@@ -9,6 +9,44 @@
 #include "h_files.h"   // include comune del tuo progetto (porta dentro defs.h, ecc.)
 #include "defs.h"      // dove sono dichiarate le tue globali
 
+/* Stringhe statiche condivise: i protocolli non possiedono copie dei nomi. */
+static const char model_nodim[] = "NODIM01";
+static const brand_info_t brand_table[BRAND_COUNT] =
+{
+    [BRAND_AXN] =
+    {
+        "AXN System", model_nodim, 0
+    },
+    [BRAND_VIDELIO] =
+    {
+        "Videlio HMS", "ADSW100", 1
+    },
+    [BRAND_GENERIC] =
+    {
+        "Generic", model_nodim, 0
+    }
+};
+
+uint8_t brand = BRAND_AXN;
+uint8_t menu_code_required = 0;
+
+const brand_info_t *Brand_GetInfo(uint8_t id)
+{
+    return id < BRAND_COUNT ? &brand_table[id] : NULL;
+}
+
+bool Brand_IsIdentityValid(uint8_t id, uint8_t require_code)
+{
+    return Brand_GetInfo(id) && require_code <= 1 &&
+           (id != BRAND_GENERIC || require_code == 0);
+}
+
+const brand_info_t *Brand_Current(void)
+{
+    const brand_info_t *info = Brand_GetInfo(brand);
+    return info ? info : &brand_table[BRAND_AXN];
+}
+
 /* ===========================================================
  * Helpers JSON molto semplici (no alloc, no dipendenze)
  * =========================================================== */

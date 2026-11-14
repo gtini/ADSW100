@@ -418,11 +418,11 @@ void task_1ms(void)
 }
 
 // Inizializza il sistema
-// Reset totale: EEPROM ai default, NTAG pulito + MAGIC/JSON riscritto.
-void HardFactoryReset(void)
+// Reset esplicito: true preserva identità di fabbrica; NTAG riallineato ai default utente.
+void HardFactoryReset(bool preserve_identity)
 {
     // 1) EEPROM ai default
-    if (EE_InitMemory() == HAL_OK)
+    if ((preserve_identity ? EE_ResetUserMemory() : EE_InitMemory()) == HAL_OK)
         USB_Printf("HFR: EEPROM defaults OK\r\n");
     else
     {
@@ -510,7 +510,7 @@ static int Startup_SimpleUnlock(void)
   USB_Printf("  %s\r\n", mac_hex);
 
   LCD_Clear();
-  LCD_DrawText("AXN Bootloader", 10, 0, 0, 0, 0);
+  LCD_DrawText(Brand_Current()->manufacturer, 0, 0, 0, 0, 0);
   LCD_DrawText("Wait for boot", 0, 20, 0, 0, 0);
 
   /* aspetta una riga per 30s */
@@ -529,7 +529,7 @@ static int Startup_SimpleUnlock(void)
 
       if (strcmp(p, expected) == 0)
       {
-        HardFactoryReset();
+        HardFactoryReset(false);
         USB_Printf("Unlock FAILED: factory reset returned without reboot.\r\n");
         return 0;
       }
@@ -720,6 +720,7 @@ int main(void)
 
   while (1)
   {
+      USB_ServiceTask();
 	  if (timer_1ms_flag)
 	  {
 		  timer_1ms_flag = false;

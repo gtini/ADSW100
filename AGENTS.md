@@ -2,9 +2,9 @@
 
 ## Ambito e autorizzazione
 
-- È autorizzato il porting a 480 MHz e la stabilizzazione richiesti dall'utente. Prima rigenerare affidabilmente con CubeMX; se non possibile, fermarsi e lasciare la rigenerazione all'utente. Non sostituire manualmente il codice generato. Nessuna nuova funzionalità v2 in questa fase.
+- Fase autorizzata: branding centralizzato, estensione EEPROM minima e accesso menu persistente. Baseline 480 MHz validata dall'utente e congelata in `0b5fa6c`: preservare DMX, Art-Net, sACN e relè, salvo i descrittori necessari al branding. Non implementare RDM, web, bootloader o nuove funzioni NFC in questa fase.
 - Non effettuare commit automaticamente e non modificare i firmware di riferimento.
-- Conservare il commit congelato `7cbf16e` (Initial commit v1.4.0): niente riscrittura della storia, cancellazione o sostituzione. Non creare il tag v2.0.0 prima della validazione finale.
+- Conservare i commit congelati `0b5fa6c` e `7cbf16e` (Initial commit v1.4.0): niente riscrittura della storia, cancellazione o sostituzione. Non creare il tag v2.0.0 prima della validazione finale.
 - Eseguire commit incrementali, circoscritti e verificabili quando autorizzati; non includere modifiche estranee dell'utente. Documentare validazione e limiti di ogni incremento.
 
 ## Codice e organizzazione
@@ -19,8 +19,11 @@
 ## EEPROM e comportamenti da preservare
 
 - Protezione assoluta della configurazione legacy Videlio: nessuna scrittura prima di lettura completa, verifica I/O e validazione; mai inizializzare automaticamente su errore bus o versione sconosciuta.
-- EEPROM: soltanto 128 byte applicativi (0x00..0x7F), come confermato dall'utente. Preservare mappa legacy e area EUI/protetta. Nessun nuovo campo, doppio slot, conversione o inizializzazione automatica in questa fase; correggere soltanto errori I/O e protezione delle scritture quando si riprende lo sviluppo.
-- Migrazione branding rinviata alla fase successiva. Le precedenti proposte a doppio slot sono superate dalla decisione di preservare la mappa nei soli 128 byte applicativi. Nessun riordino o reinterpretazione silenziosa dei campi legacy.
+- EEPROM: soltanto 128 byte applicativi (0x00..0x7F). Mappa legacy invariata. Sono autorizzati soltanto versione struttura (0x02), brand (0x25) e richiesta codice (0x26), con discriminanti incorporati nei due nuovi byte. Niente doppio slot, CRC o strutture complesse.
+- Migrare soltanto configurazioni legacy con magic e parametri validi a Brand1 Videlio, codice abilitato: l'utente conferma che i dispositivi legacy richiedevano il codice. La copia locale NO_CODE non rappresenta la policy delle unità installate. Preservare ogni altro byte; versione commessa per ultima e read-back.
+- Brand e policy menu non sono modificabili da UI. Solo CDC di fabbrica nei primi 30000 ms da HAL_Init, con deadline assoluta non riaperta da USB/reconnect/wrap. Usare sintassi RSH7 `brand?`, `brand=<id>`, `menu_code?`, `menu_code=<0|1>`; scritture persistenti applicate al prossimo boot (`OK REBOOT`).
+- Default per comando brand/init: AXN codice 0, Videlio codice 1, Generic sempre 0 (rifiutare Generic/1). AXN e Videlio permettono override CDC nella stessa finestra. Il reset da pannello preserva i metadati già salvati, anche se diversi dalla RAM fino al reboot.
+- ESTA `0x17FA` AXN Systems per tutti i brand, confermato dall'utente. OEM RSH7 `0x2F3F` è specifico RSH7 e non è assegnato a questo prodotto: non riutilizzarlo. Nomi e modelli appartengono alla tabella unica in cfg_io.c, esposta da defs.h.
 - L'azzeramento dei livelli alla perdita DMX è intenzionale: preservare spegnimento relè con OFF Time. In Auto verificare anche il subentro delle altre sorgenti disponibili.
 - Non inventare Manufacturer ID, OEM Art-Net, PID o ID Uploader. Consultare registri, INI, sorgenti e assegnazioni successive; distinguere UID, Model ID, Product ID e Target ID.
 
