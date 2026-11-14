@@ -62,7 +62,7 @@ void ArtNet_OnDataPacket(uint16_t universe,
                          uint16_t src_port);
 
 /* Avvio/stop listener UDP */
-void ArtNet_StartListening(void);
+bool ArtNet_StartListening(void);
 void ArtNet_StopListening(void);
 
 /* Diagnostica */

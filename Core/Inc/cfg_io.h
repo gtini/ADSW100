@@ -44,7 +44,7 @@ void get_runtime_vars(uint8_t *dmx_mode, uint16_t *universe,
                       bool *dhcp, char ip[16], char mask[16], char gw[16]);
 
 /* Applica i valori ricevuti (da NFC o Web) alle variabili globali */
-void apply_config_vars(uint8_t dmx_mode_in, uint16_t universe_in,
+bool apply_config_vars(uint8_t dmx_mode_in, uint16_t universe_in,
                        uint8_t net, uint8_t subuni, uint16_t prio_in,
                        bool dhcp_in, const char *ip_str, const char *mask_str, const char *gw_str);
 

@@ -37,79 +37,103 @@ static int starts_with_artnet_id(const uint8_t *buf, uint16_t len)
     return (memcmp(buf, kId, 8) == 0);
 }
 
-uint16_t ArtNet_GetSlotsView(uint16_t universe, const uint8_t **slots_out)
+/* Due sorgenti Art-Net HTP per il solo universo utilizzato dal modulo.
+   I record di merge scadono dopo 10 s; la disponibilità applicativa resta 3 s. */
+typedef struct
 {
+    bool used;
+    ip_addr_t ip;
+    uint8_t physical, sequence;
+    uint16_t count;
+    uint32_t stamp;
+    uint8_t slots[512];
+} art_source_t;
+static art_source_t sources[2];
+static uint8_t packet_physical;
+
+static void ArtNet_ResetData(void)
+{
+    memset(g_art_db, 0, sizeof g_art_db);
+    memset(sources, 0, sizeof sources);
+}
+
+artnet_universe_t *ArtNet_FindUniverse(uint16_t universe, bool create)
+{
+    if (universe != artnet_universe || universe > 32767) return NULL;
+    artnet_universe_t *u = &g_art_db[0];
+    if (u->in_use && u->universe != universe) ArtNet_ResetData();
+    if (!u->in_use && create)
+    {
+        u->in_use = 1;
+        u->universe = universe;
+    }
+    return u->in_use ? u : NULL;
+}
+
+uint16_t ArtNet_GetSlotsView(uint16_t universe, const uint8_t **out)
+{
+    if (out) *out = NULL;
     artnet_universe_t *u = ArtNet_FindUniverse(universe, false);
-    if (!u) {
-        if (slots_out) *slots_out = NULL;
-        return 0;
+    if (!u) return 0;
+    uint32_t now = HAL_GetTick(), latest_age = UINT32_MAX;
+    memset(u->slots, 0, sizeof u->slots);
+    u->slots_valid = 0;
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        art_source_t *s = &sources[i];
+        uint32_t age = now - s->stamp;
+        if (s->used && age >= 10000u) s->used = false;
+        if (!s->used) continue;
+        if (age < latest_age) latest_age = age;
+        if (s->count > u->slots_valid) u->slots_valid = s->count;
+        for (unsigned j = 0; j < s->count; ++j)
+        {
+            if (s->slots[j] > u->slots[j]) u->slots[j] = s->slots[j];
+        }
     }
-
-    uint32_t now = HAL_GetTick();
-    if (u->slots_valid == 0 || (now - u->last_rx_ms) > ARTNET_HOLD_MS) {
-        if (slots_out) *slots_out = NULL;  // “tutto zero” virtuale
-        return 0;
-    }
-
-    if (slots_out) *slots_out = u->slots;
+    if (latest_age >= ARTNET_HOLD_MS || !u->slots_valid) return 0;
+    if (out) *out = u->slots;
     return u->slots_valid;
 }
 
-/* ===== DB: find/alloc ===== */
-artnet_universe_t* ArtNet_FindUniverse(uint16_t universe, bool create)
+void ArtNet_OnDataPacket(uint16_t universe, uint8_t sequence, const uint8_t *levels,
+                        uint16_t count, const ip_addr_t *ip, uint16_t port)
 {
-    for (size_t i = 0; i < ARTNET_MAX_UNIVERSES; ++i)
-    {
-        if (g_art_db[i].in_use && g_art_db[i].universe == universe)
-        {
-            return &g_art_db[i];
-        }
-    }
-    if (!create) return NULL;
-
-    for (size_t i = 0; i < ARTNET_MAX_UNIVERSES; ++i)
-    {
-        if (!g_art_db[i].in_use)
-        {
-            memset(&g_art_db[i], 0, sizeof(g_art_db[i]));
-            g_art_db[i].in_use   = 1;
-            g_art_db[i].universe = universe;
-            g_art_db[i].priority = 100;
-            g_art_db[i].slots_valid= 0;
-            g_art_db[i].last_rx_ms = 0;
-            return &g_art_db[i];
-        }
-    }
-    return NULL;
-}
-
-/* ===== Callback applicativa ===== */
-void ArtNet_OnDataPacket(uint16_t universe,
-                         uint8_t sequence,
-                         const uint8_t *levels,
-                         uint16_t level_count,
-                         const ip_addr_t *src_ip,
-                         uint16_t src_port)
-{
-    (void)src_ip; (void)src_port;
-    if (!levels) return;
-
-    if (level_count > ARTNET_SLOTS_MAX) level_count = ARTNET_SLOTS_MAX;
-
+    (void)port;
+    if (!levels || !ip || count < 2 || count > 512 || (count & 1)) return;
     artnet_universe_t *u = ArtNet_FindUniverse(universe, true);
     if (!u) return;
-
-    u->sequence    = sequence;
-    u->slots_valid = level_count;
-
-    if (level_count > 0) {
-        memcpy(u->slots, levels, level_count);
+    uint32_t now = HAL_GetTick();
+    art_source_t *slot = NULL;
+    for (unsigned i = 0; i < 2; ++i)
+    {
+        if (sources[i].used && now - sources[i].stamp >= 10000u) sources[i].used = false;
+        if (sources[i].used && ip_addr_cmp(&sources[i].ip, ip) && sources[i].physical == packet_physical)
+        {
+            slot = &sources[i];
+            break;
+        }
     }
-    if (level_count < ARTNET_SLOTS_MAX) {
-        memset(&u->slots[level_count], 0, ARTNET_SLOTS_MAX - level_count);
+    if (!slot)
+    {
+        for (unsigned i = 0; i < 2; ++i) if (!sources[i].used) { slot = &sources[i]; break; }
+        if (!slot) return;
+        memset(slot, 0, sizeof *slot);
     }
-
-    u->last_rx_ms = HAL_GetTick();
+    if (slot->used && sequence && slot->sequence)
+    {
+        uint8_t delta = (uint8_t)(sequence - slot->sequence);
+        if (!delta || delta >= 128) return;
+    }
+    slot->used = true;
+    slot->ip = *ip;
+    slot->physical = packet_physical;
+    slot->sequence = sequence;
+    slot->count = count;
+    slot->stamp = now;
+    memcpy(slot->slots, levels, count);
+    u->sequence = sequence;
+    u->last_rx_ms = now;
 }
 
 /* ===== ArtPollReply builder ===== */
@@ -134,14 +158,14 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     }
 #endif
 
-    /* Port (BE) = 0x1936 */
-    wr_be16(&r[14], 0x1936);
+    /* Porta little-endian = 0x1936. */
+    wr_le16(&r[14], 0x1936);
 
     /* VersInfoH/L (fw/proto) */
-    r[16] = 1; r[17] = 0;
+    r[16] = FW_VERSION_MAJOR; r[17] = FW_VERSION_MINOR;
 
     /* NetSwitch/SubSwitch */
-    r[18] = 0; r[19] = 0;
+    r[18] = (uint8_t)(artnet_universe >> 8); r[19] = (uint8_t)((artnet_universe >> 4) & 15);
 
     /* Oem (BE) – 0xFFFF non registrato */
     wr_be16(&r[20], 0xFFFF);
@@ -149,20 +173,22 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     /* UbeaVersion */
     r[22] = 0;
 
-    /* Status1: 15-bit addressing capable (bit2=1) */
-    r[23] = (1 << 2);
+    /* Status1: avvio da flash, nessuna capability RDM dichiarata. */
+    r[23] = 0;
 
     /* ESTA */
-    wr_be16(&r[24], 0x0000);
+    wr_le16(&r[24], 0x0000);
 
     /* ShortName[18] */
-    strncpy((char*)&r[26], ARTNET_SHORT_NAME, 18);
+    strncpy((char*)&r[26], ARTNET_SHORT_NAME, 17);
 
     /* LongName[64] */
-    strncpy((char*)&r[44], ARTNET_LONG_NAME, 64);
+    strncpy((char*)&r[44], ARTNET_LONG_NAME, 63);
 
     /* NodeReport[64] */
-    strncpy((char*)&r[108], "#0001 [OK] ADSW100", 64);
+    static uint16_t replies;
+    replies = (uint16_t)((replies + 1u) % 10000u);
+    snprintf((char *)&r[108], 64, "#0001 [%04u] ADSW100", (unsigned)replies);
 
     /* NumPortsHi/Lo – 1 DMX OUT */
     r[172] = 0;
@@ -174,11 +200,11 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     /* GoodInput/GoodOutput = 0 (default) */
 
     /* SwIn[4] / SwOut[4] – mappa SubUni (LSB) */
-    r[190] = (uint8_t)(artnet_universe & 0x0F); /* SwIn[0] */
-    r[194] = (uint8_t)(artnet_universe & 0x0F); /* SwOut[0] */
+    r[186] = 0; /* Nessun ingresso Art-Net pubblicato. */
+    r[190] = (uint8_t)(artnet_universe & 0x0F); /* SwOut[0] */
 
     /* Style: 0x00 = StNode */
-    r[203] = 0x00;
+    r[200] = 0x00;
 
     /* MAC[6] */
     if (n && n->hwaddr_len == 6) {
@@ -191,8 +217,8 @@ static void send_artpoll_reply(const ip_addr_t *dst_ip, u16_t dst_port)
     /* BindIndex */
     r[211] = 1;
 
-    /* Status2: DHCP capable (bit1) */
-    r[212] = (1 << 1);
+    /* Status2: DHCP capace/attivo e indirizzamento a 15 bit. */
+    r[212] = (1 << 2) | (1 << 3) | (use_dhcp ? (1 << 1) : 0);
 
     /* invia */
     struct pbuf *pb = pbuf_alloc(PBUF_TRANSPORT, sizeof(r), PBUF_RAM);
@@ -243,8 +269,8 @@ static void artnet_udp_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
         uint8_t  net    = (uint8_t)(buf[15] & 0x7F);
         uint16_t dlen   = rd_be16(&buf[16]);
 
-        if (dlen == 0) break;
-        if (dlen > ARTNET_SLOTS_MAX) dlen = ARTNET_SLOTS_MAX;
+        if (dlen < 2 || dlen > ARTNET_SLOTS_MAX || (dlen & 1)) break;
+        if (buf[15] & 0x80) break;
         if ((uint16_t)(18 + dlen) > len) break;
 
         const uint8_t *levels = &buf[18];
@@ -264,13 +290,14 @@ static void artnet_udp_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
             g_art_diag.cfg_count++;
         }
 
+        packet_physical = buf[13];
         ArtNet_OnDataPacket(universe, seq, levels, level_count, addr, port);
     } break;
 
             case 0x2000: /* OpPoll */
             {
                 /* Reply unicast al mittente su 6454 */
-                send_artpoll_reply(addr, ARTNET_UDP_PORT);
+                if (len >= 14 && rd_be16(buf + 10) >= 14) send_artpoll_reply(addr, ARTNET_UDP_PORT);
             } break;
 
             default:
@@ -280,26 +307,29 @@ static void artnet_udp_recv(void *arg, struct udp_pcb *upcb, struct pbuf *p,
 }
 
 /* ===== Public API ===== */
-void ArtNet_StartListening(void)
+bool ArtNet_StartListening(void)
 {
-    if (art_pcb) return;
+    if (art_pcb) return true;
 
     art_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
     if (!art_pcb) {
-        return;
+        return false;
     }
 
     if (udp_bind(art_pcb, IP_ANY_TYPE, ARTNET_UDP_PORT) != ERR_OK) {
         udp_remove(art_pcb);
         art_pcb = NULL;
-        return;
+        return false;
     }
 
     udp_recv(art_pcb, artnet_udp_recv, NULL);
+    return true;
 }
 
 void ArtNet_StopListening(void)
 {
+    ArtNet_ResetData();
+    memset(&g_art_diag, 0, sizeof g_art_diag);
     if (!art_pcb) return;
     udp_recv(art_pcb, NULL, NULL);
     udp_remove(art_pcb);

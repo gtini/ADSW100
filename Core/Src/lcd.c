@@ -652,7 +652,6 @@ void LCD_DrawText(const char* text, int x, int y, lcd_font_t font_size, bool inv
 
 void EncoderTask(void)
 {
-	int i;
 	static bool zz_fl = false;
 	uint8_t encoder_now;
 	static uint8_t encoder_old = 0xFF;
@@ -708,18 +707,7 @@ void EncoderTask(void)
 		HAL_GPIO_TogglePin(STAT_LED_GPIO_Port, STAT_LED_Pin);
 	}
 
-	if (dmx_timeout > 0)
-	{
-		if (--dmx_timeout == 0)
-		{
-			HAL_GPIO_WritePin(DMX_LED_GPIO_Port, DMX_LED_Pin, GPIO_PIN_RESET);
 
-			for (i = 0; i < 512; i++)
-			{
-				dmxRxBuffer[i] = 0;
-			}
-		}
-	}
 }
 
 // delta encoder da ultimo polling

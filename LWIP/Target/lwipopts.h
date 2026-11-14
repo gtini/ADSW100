@@ -25,7 +25,7 @@
 #include "main.h"
 
 /*-----------------------------------------------------------------------------*/
-/* Current version of LwIP supported by CubeMx: 2.1.2 -*/
+/* Current version of LwIP supported by CubeMx: 2.2.1 -*/
 /*-----------------------------------------------------------------------------*/
 
 /* Within 'USER CODE' section, code will be kept by default at each generation */
@@ -75,6 +75,8 @@
 #define TCP_SNDQUEUELOWAT 5
 /*----- Value in opt.h for TCP_WND_UPDATE_THRESHOLD: LWIP_MIN(TCP_WND/4, TCP_MSS*4) -----*/
 #define TCP_WND_UPDATE_THRESHOLD 536
+/*----- Default Value for LWIP_NETIF_STATUS_CALLBACK: 0 ---*/
+#define LWIP_NETIF_STATUS_CALLBACK 1
 /*----- Value in opt.h for LWIP_NETIF_LINK_CALLBACK: 0 -----*/
 #define LWIP_NETIF_LINK_CALLBACK 1
 /*----- Value in opt.h for LWIP_NETCONN: 1 -----*/
@@ -103,6 +105,9 @@
 #define CHECKSUM_CHECK_ICMP6 0
 /*-----------------------------------------------------------------------------*/
 /* USER CODE BEGIN 1 */
+/* DNS di configurazione e DHCP attivi senza modificare la mappa EEPROM. */
+#undef LWIP_DNS
+#define LWIP_DNS 1
 
  /* === RX zero-copy pool: tienilo >= ETH_RX_DESC_CNT === */
  #ifndef MEMP_NUM_RX_POOL

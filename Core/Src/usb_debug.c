@@ -29,32 +29,23 @@ static inline int CDC_IsConfigured(void) {
 // extern volatile uint8_t cdc_dtr;  // settalo in CDC_SET_CONTROL_LINE_STATE
 // static inline int CDC_IsReady(void) { return CDC_IsConfigured() && cdc_dtr; }
 
+/* Un solo invio in volo: buffer statico posseduto da CDC fino al completamento.
+   I messaggi diagnostici eccedenti il buffer o ricevuti durante BUSY sono scartati. */
 void USB_Send(const char *msg)
 {
-  if (msg == NULL) return;
-  if (!CDC_IsConfigured()) return;                   /* cavo non connesso/porta non aperta: drop */
-
-  uint16_t len = (uint16_t)strlen(msg);
-  uint16_t sent = 0;
-  uint32_t t0 = HAL_GetTick();
-
-  while (sent < len) {
-    uint16_t chunk = len - sent;
-#ifdef CDC_DATA_FS_MAX_PACKET_SIZE
-    if (chunk > CDC_DATA_FS_MAX_PACKET_SIZE) chunk = CDC_DATA_FS_MAX_PACKET_SIZE;
-#else
-    if (chunk > 64) chunk = 64;                      /* fallback FS */
-#endif
-    uint8_t *ptr = (uint8_t *)&msg[sent];
-
-    if (CDC_Transmit_FS(ptr, chunk) == USBD_OK) {
-      sent += chunk;
-    } else {
-      /* BUSY: non bloccare — prova per poco, poi lascia perdere */
-      if ((HAL_GetTick() - t0) > USB_LOG_BUDGET_MS) break;
-      /* piccolo yield: NO HAL_Delay lunghi */
+    static uint8_t tx[256];
+    if (!msg || !CDC_IsConfigured()) return;
+    uint32_t key = __get_PRIMASK();
+    __disable_irq();
+    USBD_CDC_HandleTypeDef *cdc = hUsbDeviceFS.pClassData;
+    if (cdc && cdc->TxState == 0)
+    {
+        size_t n = strlen(msg);
+        if (n > sizeof tx) n = sizeof tx;
+        memcpy(tx, msg, n);
+        (void)CDC_Transmit_FS(tx, (uint16_t)n);
     }
-  }
+    __set_PRIMASK(key);
 }
 
 void USB_Printf(const char *fmt, ...)

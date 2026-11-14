@@ -167,8 +167,8 @@ SECTIONS
   } >RAM_D1
   
   /* ETH/LwIP: descriptors + RX pool in D2 (non-cache) */
-.RxDecripSection (NOLOAD) : { . = ALIGN(32); *(.RxDecripSection) } > RAM_D2
-.TxDecripSection (NOLOAD) : { . = ALIGN(32); *(.TxDecripSection) } > RAM_D2
+.RxDecripSection (NOLOAD) : { . = ALIGN(32); *(.RxDecripSection) *(.RxDescripSection) } > RAM_D2
+.TxDecripSection (NOLOAD) : { . = ALIGN(32); *(.TxDecripSection) *(.TxDescripSection) } > RAM_D2
 .Rx_PoolSection  (NOLOAD) : { . = ALIGN(32); *(.Rx_PoolSection)  } > RAM_D2 
 
 .noinit (NOLOAD) :

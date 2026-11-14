@@ -10,11 +10,11 @@
 extern I2C_HandleTypeDef hi2c1;
 
 uint8_t EE_ReadU8(uint16_t addr);
-void EE_WriteU8(uint16_t addr, uint8_t v);
+HAL_StatusTypeDef EE_WriteU8(uint16_t addr, uint8_t v);
 uint16_t EE_ReadU16(uint16_t addr);
-void EE_WriteU16(uint16_t addr, uint16_t v);
+HAL_StatusTypeDef EE_WriteU16(uint16_t addr, uint16_t v);
 uint32_t EE_ReadU32(uint16_t addr);
-void EE_WriteU32(uint16_t addr, uint32_t v);
+HAL_StatusTypeDef EE_WriteU32(uint16_t addr, uint32_t v);
 HAL_StatusTypeDef EE_Read (uint16_t memAddr, uint8_t* buf, uint16_t len);
 HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len);
 

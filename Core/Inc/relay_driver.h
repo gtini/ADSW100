@@ -36,6 +36,8 @@ extern int32_t    rlyTimer[N_RLY];
 // prototipi pubblici
 void     InitRelay(void);
 void     RelayTask(void);
+/* ISR TIM6, servizio non bloccante delle bobine. */
+void Relay_PulseService1ms(void);
 
 // API per modalità manuale / lettura stato ===
 void     Relay_ManualEnter(void);         // abilita override manuale dagli stati attuali

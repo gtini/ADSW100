@@ -31,116 +31,135 @@ void sACN_GetDiag(sacn_diag_info_t *out)
     *out = g_sacn_diag;
 }
 
-// Ritorna la "vista" dei dati: se scaduti -> valid = 0 e slots_out = NULL
-uint16_t sACN_GetSlotsView(uint16_t universe, const uint8_t **slots_out)
+/* Tracking limitato a quattro CID per l'universo configurato; nessuna
+   allocazione permanente per universi estranei. Merge HTP a pari priorità. */
+typedef struct
 {
-    sacn_universe_t *u = sACN_FindUniverse(universe, false);
-    if (!u) {
-        if (slots_out) *slots_out = NULL;
-        return 0;
-    }
+    bool used;
+    uint8_t cid[16], sequence, priority;
+    uint16_t count;
+    uint32_t stamp;
+    uint8_t slots[512];
+} sacn_source_t;
+static sacn_source_t sources[4];
 
-    uint32_t now = HAL_GetTick();
-    if (u->slots_valid == 0 || (now - u->last_update_ms) > SACN_LOSS_MS) {
-        if (slots_out) *slots_out = NULL;   // buffer "virtualmente" tutto zero
-        return 0;
-    }
-
-    if (slots_out) *slots_out = u->slots;
-    return u->slots_valid;
+void sACN_ResetData(void)
+{
+    memset(g_sacn_db, 0, sizeof g_sacn_db);
+    memset(sources, 0, sizeof sources);
 }
 
-/* ==================== DB helpers ==================== */
-
-sacn_universe_t* sACN_FindUniverse(uint16_t universe, bool allow_create)
+sacn_universe_t *sACN_FindUniverse(uint16_t universe, bool create)
 {
-    for (size_t i = 0; i < SACN_MAX_UNIVERSES; ++i)
+    if (universe != sacn_universe || universe < 1 || universe > 63999) return NULL;
+    sacn_universe_t *u = &g_sacn_db[0];
+    if (u->in_use && u->universe != universe) sACN_ResetData();
+    if (!u->in_use && create)
     {
-        if (g_sacn_db[i].in_use && g_sacn_db[i].universe == universe)
+        u->in_use = 1;
+        u->universe = universe;
+    }
+    return u->in_use ? u : NULL;
+}
+
+uint16_t sACN_GetSlotsView(uint16_t universe, const uint8_t **out)
+{
+    if (out) *out = NULL;
+    sacn_universe_t *u = sACN_FindUniverse(universe, false);
+    if (!u) return 0;
+    uint32_t now = HAL_GetTick();
+    unsigned priority = 0;
+    bool any = false;
+    for (unsigned i = 0; i < 4; ++i)
+    {
+        if (sources[i].used && now - sources[i].stamp >= SACN_LOSS_MS) sources[i].used = false;
+        if (sources[i].used && sources[i].priority >= sacn_min_prio && sources[i].count)
         {
-            return &g_sacn_db[i];
+            if (!any || sources[i].priority > priority) priority = sources[i].priority;
+            any = true;
         }
     }
-
-    if (!allow_create)
+    memset(u->slots, 0, sizeof u->slots);
+    u->slots_valid = 0;
+    if (!any) return 0;
+    for (unsigned i = 0; i < 4; ++i)
     {
-        return NULL;
-    }
-
-    for (size_t i = 0; i < SACN_MAX_UNIVERSES; ++i)
-    {
-        if (!g_sacn_db[i].in_use)
+        sacn_source_t *source = &sources[i];
+        if (!source->used || source->priority != priority) continue;
+        if (source->count > u->slots_valid) u->slots_valid = source->count;
+        for (unsigned j = 0; j < source->count; ++j)
         {
-            sacn_universe_t *u = &g_sacn_db[i];
-            memset(u, 0, sizeof(*u));
-            u->in_use   = 1;
-            u->universe = universe;
-            u->priority = 100;
-            u->last_update_ms= 0;
-            u->slots_valid   = 0;
-            return u;
+            if (source->slots[j] > u->slots[j]) u->slots[j] = source->slots[j];
         }
     }
-    return NULL;
+    u->priority = priority;
+    if (out) *out = u->slots;
+    return u->slots_valid;
 }
 
 bool sACN_HasUniverse(uint16_t universe)
 {
-    return sACN_FindUniverse(universe, false) != NULL;
+    return sACN_GetSlotsView(universe, NULL) != 0;
 }
 
-uint8_t sACN_GetLevel(uint16_t universe, uint16_t ch_index)
+uint8_t sACN_GetLevel(uint16_t universe, uint16_t ch)
 {
-    if (ch_index >= SACN_SLOTS_MAX)
-    {
-        return 0;
-    }
-    sacn_universe_t *u = sACN_FindUniverse(universe, false);
-    if (!u || u->slots_valid == 0 || ch_index >= u->slots_valid)
-    {
-        return 0;
-    }
-    return u->slots[ch_index];
+    const uint8_t *data;
+    uint16_t count = sACN_GetSlotsView(universe, &data);
+    return ch < count ? data[ch] : 0;
 }
 
-/* ==================== Update dal parser ==================== */
-
-void sACN_OnDataPacket(uint16_t universe,
-                       uint8_t priority,
-                       uint8_t sequence,
-                       uint8_t start_code,
-                       const uint8_t *levels,
-                       uint16_t level_count,
-                       const ip_addr_t *src_ip,
-                       uint16_t src_port)
+/* CID e sequence sono per sorgente; pacchetti vecchi non rinnovano il timeout. */
+void sACN_OnDataPacket(uint16_t universe, uint8_t priority, uint8_t sequence,
+                       uint8_t start_code, const uint8_t *levels, uint16_t count,
+                       const ip_addr_t *ip, uint16_t port, const uint8_t cid[16], uint8_t options)
 {
-    if (level_count > SACN_SLOTS_MAX)
-    {
-        level_count = SACN_SLOTS_MAX;
-    }
-
+    if (!cid || !levels || count > 512 || priority > 200 || start_code || (options & 0x80)) return;
+    uint8_t cid_bits = 0;
+    for (unsigned i = 0; i < 16; ++i) cid_bits |= cid[i];
+    if (!cid_bits || (options & 0x1F)) return;
     sacn_universe_t *u = sACN_FindUniverse(universe, true);
-    if (!u)
+    if (!u) return;
+    uint32_t now = HAL_GetTick();
+    sacn_source_t *slot = NULL;
+    for (unsigned i = 0; i < 4; ++i)
     {
-        return;
+        if (sources[i].used && now - sources[i].stamp >= SACN_LOSS_MS) sources[i].used = false;
+        if (sources[i].used && memcmp(sources[i].cid, cid, 16) == 0) slot = &sources[i];
     }
-
-    u->priority       = priority;
-    u->sequence       = sequence;
-    u->start_code     = start_code;
-    u->slots_valid    = level_count;
-    u->last_update_ms = HAL_GetTick();
-    u->last_src_port  = src_port;
-    if (src_ip) { u->last_src_ip = *src_ip; }
-
-    if (levels && level_count)
+    if (slot)
     {
-        memcpy(u->slots, levels, level_count);
-        if (level_count < SACN_SLOTS_MAX)
+        int delta = (int)sequence - slot->sequence;
+        /* E1.31: duplicato e finestra dei 19 pacchetti precedenti. */
+        if (delta <= 0 && delta > -20) return;
+        if (options & 0x40)
         {
-            memset(u->slots + level_count, 0, SACN_SLOTS_MAX - level_count);
+            slot->used = false;
+            return;
         }
     }
+    else
+    {
+        if (options & 0x40) return;
+        for (unsigned i = 0; i < 4; ++i) if (!sources[i].used) { slot = &sources[i]; break; }
+        if (!slot)
+        {
+            slot = &sources[0];
+            for (unsigned i = 1; i < 4; ++i) if (sources[i].priority < slot->priority) slot = &sources[i];
+            if (priority <= slot->priority) return;
+        }
+    }
+    slot->used = true;
+    memcpy(slot->cid, cid, 16);
+    slot->sequence = sequence;
+    slot->priority = priority;
+    slot->count = count;
+    slot->stamp = now;
+    memcpy(slot->slots, levels, count);
+    u->sequence = sequence;
+    u->last_update_ms = now;
+    u->last_src_port = port;
+    if (ip) u->last_src_ip = *ip;
 }
 
 /* Cache join IGMP per evitare chiamate/log ripetuti */
@@ -186,8 +205,14 @@ void sACN_ResetJoinState(void)
 {
     for (int i = 0; i < (int)SACN_MAX_UNIVERSES; i++)
     {
+        if (g_igmp_joined_used[i])
+        {
+            ip4_addr_t group;
+            IP4_ADDR(&group, 239, 255, g_igmp_joined_uni[i] >> 8, g_igmp_joined_uni[i] & 255);
+            (void)igmp_leavegroup_netif(&gnetif, &group);
+        }
         g_igmp_joined_used[i] = 0;
-        g_igmp_joined_uni[i]  = 0;
+        g_igmp_joined_uni[i] = 0;
     }
     USB_Printf("[sACN] Join state reset\n");
 }
@@ -196,6 +221,7 @@ void sACN_ResetJoinState(void)
 
 bool sACN_JoinUniverse(uint16_t universe)
 {
+    if (universe < 1 || universe > 63999) return false;
     /* idempotente: se già joinato, evita chiamate/log ripetuti */
     if (sACN_FindJoinedSlot(universe) >= 0)
         return true;
@@ -263,6 +289,10 @@ static void sacn_rx_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     if (len < 126) return;
 
+    /* Lunghezze PDU devono descrivere esattamente il datagramma ricevuto. */
+    if (len > 638 || (buf[16] & 0xF0) != 0x70 ||
+        (((buf[16] & 15) << 8) | buf[17]) != len - 16 ||
+        (buf[38] & 0xF0) != 0x70 || (((buf[38] & 15) << 8) | buf[39]) != len - 38) return;
     /* Root layer */
     if (((buf[0] << 8) | buf[1]) != 0x0010) return;
     if (((buf[2] << 8) | buf[3]) != 0x0000) return;
@@ -287,10 +317,10 @@ static void sacn_rx_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     if (fr_vec != 0x00000002u) return;
 
     uint8_t  priority = fr[70];
-    uint8_t  sequence = fr[72];
+    uint8_t  sequence = fr[73];
     uint16_t universe = (uint16_t)((fr[75] << 8) | fr[76]);
 
-    if (sacn_transport == 1 && universe != sacn_universe)
+    if (universe != sacn_universe || universe < 1 || universe > 63999 || priority > 200)
     {
     	return; // scarta frame di altri universi in modalità unicast
     }
@@ -301,12 +331,17 @@ static void sacn_rx_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
     /* deve arrivare almeno fino allo start code (offset 10) */
     if (len < (uint16_t)(dmp - buf + 11)) return;
 
+    if ((dmp[0] & 0xF0) != 0x70 || (((dmp[0] & 15) << 8) | dmp[1]) != len - 115 ||
+        dmp[4] != 0 || dmp[5] != 0 || dmp[6] != 0 || dmp[7] != 1) return;
+    /* Nessun supporto sincronizzazione: scarta Force_Synchronization,
+       altrimenti usa i livelli senza attendere sync (modalità asincrona). */
+    if (fr[74] & 0x20) return;
     if (dmp[2] != 0x02) return;  /* DMP Vector */
     if (dmp[3] != 0xA1) return;  /* Addr/Data type */
 
     /* prop_count include Start Code */
     uint16_t prop_count = (uint16_t)((dmp[8] << 8) | dmp[9]);
-    if (prop_count < 1) return;
+    if (prop_count < 1 || prop_count > 513 || len != 125u + prop_count) return;
 
     uint8_t  start_code   = dmp[10];       /* SC corretto */
     const uint8_t *levels = dmp + 11;      /* CH1 corretto */
@@ -333,31 +368,34 @@ static void sacn_rx_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p,
 
     /* Pubblica nel DB bufferizzato */
     sACN_OnDataPacket(universe, priority, sequence, start_code,
-                      levels, level_count, addr, port);
+                      levels, level_count, addr, port, buf + 22, fr[74]);
 }
 
 /* ==================== Start/Stop ==================== */
 
-void sACN_StartListening(void)
+bool sACN_StartListening(void)
 {
-    if (sacn_pcb) { return; }
+    if (sacn_pcb) { return true; }
 
     sacn_pcb = udp_new_ip_type(IPADDR_TYPE_ANY);
-    if (!sacn_pcb) { return; }
+    if (!sacn_pcb) { return false; }
 
     if (udp_bind(sacn_pcb, IP_ANY_TYPE, 5568) != ERR_OK)
     {
         udp_remove(sacn_pcb);
         sacn_pcb = NULL;
-        return;
+        return false;
     }
 
     udp_recv(sacn_pcb, sacn_rx_cb, NULL);
     USB_Printf("sACN: listening on UDP/5568\n");
+    return true;
 }
 
 void sACN_StopListening(void)
 {
+    sACN_ResetData();
+    memset(&g_sacn_diag, 0, sizeof g_sacn_diag);
     if (!sacn_pcb) { return; }
     udp_recv(sacn_pcb, NULL, NULL);
     udp_remove(sacn_pcb);

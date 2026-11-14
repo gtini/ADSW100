@@ -78,368 +78,156 @@ const uint16_t RLY_OFF_PIN[N_RLY] = {
 // ---------------------------------------------------------------------------
 
 RLY_STATUS rlyStatus[N_RLY];
-int32_t    rlyTimer[N_RLY];
+int32_t rlyTimer[N_RLY];
+static volatile uint8_t relay_manual_mode;
+static volatile uint16_t relay_manual_mask;
+static volatile uint16_t relay_target_mask;
+static volatile bool relay_initialized;
+static volatile uint16_t stable_mask;
+static uint8_t phase[N_RLY];
+static uint32_t deadline[N_RLY];
 
-// Modalità manuale
-//  - relay_manual_mode = 0 → AUTO (DMX / ArtNet / sACN)
-//  - relay_manual_mode = 1 → MANUAL (UI Manual mode)
-//  - relay_manual_mask: bit i = ON (1) / OFF (0) desiderato per relè i
-
-static volatile uint8_t  relay_manual_mode = 0;
-static volatile uint16_t relay_manual_mask = 0;
-
-// ---------------------------------------------------------------------------
-//                      FUNZIONI DI SUPPORTO (PULSE)
-// ---------------------------------------------------------------------------
-
-// Impulso ON blocking (usato SOLO in manuale)
-static void Relay_PulseOn(uint8_t idx)
-{
-    if (idx >= N_RLY) return;
-
-    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[idx],
-                      (uint16_t)RLY_ON_PIN[idx],
-                      GPIO_PIN_SET);
-    HAL_Delay(RLY_PULSE);
-    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[idx],
-                      (uint16_t)RLY_ON_PIN[idx],
-                      GPIO_PIN_RESET);
-
-    // piccola guardia per sicurezza
-    HAL_Delay(RLY_GUARD);
-}
-
-// Impulso OFF blocking (usato SOLO in manuale)
-static void Relay_PulseOff(uint8_t idx)
-{
-    if (idx >= N_RLY) return;
-
-    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[idx],
-                      (uint16_t)RLY_OFF_PIN[idx],
-                      GPIO_PIN_SET);
-    HAL_Delay(RLY_PULSE);
-    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[idx],
-                      (uint16_t)RLY_OFF_PIN[idx],
-                      GPIO_PIN_RESET);
-
-    // piccola guardia per sicurezza
-    HAL_Delay(RLY_GUARD);
-}
-
-// ---------------------------------------------------------------------------
-//                      INIZIALIZZAZIONE
-// ---------------------------------------------------------------------------
-
+/* Inizializzazione prima del servizio TIM6; nessuna attesa bloccante. */
 void InitRelay(void)
 {
-    for (int i = 0; i < N_RLY; i++)
-    {
-        rlyStatus[i] = ST_UNKN;
-        rlyTimer[i]  = 0;
-    }
-
+    relay_initialized = false;
     relay_manual_mode = 0;
-    relay_manual_mask = 0;
+    relay_manual_mask = relay_target_mask = stable_mask = 0;
+    for (unsigned i = 0; i < N_RLY; ++i)
+    {
+        HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[i], RLY_ON_PIN[i], GPIO_PIN_RESET);
+        HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[i], RLY_OFF_PIN[i], GPIO_PIN_RESET);
+        phase[i] = 0;
+        rlyTimer[i] = 0;
+        rlyStatus[i] = ST_UNKN;
+    }
+    relay_initialized = true;
 }
 
-// ---------------------------------------------------------------------------
-//                      API MANUAL MODE (UI)
-// ---------------------------------------------------------------------------
-
-// Bitmask relè ON
-// - in manuale: usa relay_manual_mask (desiderato dall'utente)
-// - in automatico: deriva da rlyStatus[] (stato effettivo noto)
+/* Stato comandato noto: nessun feedback fisico dei contatti disponibile. */
 uint16_t Relay_GetOnMask(void)
 {
-    if (relay_manual_mode)
-    {
-        return relay_manual_mask;
-    }
-
-    uint16_t m = 0;
-    for (int i = 0; i < N_RLY; i++)
-    {
-        if (rlyStatus[i] == ST_ON)
-            m |= (1u << i);
-    }
-    return m;
+    return relay_manual_mode ? relay_manual_mask : stable_mask;
 }
 
-// Entrata in modalità manuale (chiamata quando entri in pagina Manual mode)
 void Relay_ManualEnter(void)
 {
+    uint32_t key = __get_PRIMASK();
+    __disable_irq();
+    relay_manual_mask = stable_mask;
     relay_manual_mode = 1;
-
-    // All’ingresso in manuale, inizializza la mask allo stato attuale
-    uint16_t m = 0;
-    for (int i = 0; i < N_RLY; i++)
-    {
-        if (rlyStatus[i] == ST_ON)
-            m |= (1u << i);
-    }
-    relay_manual_mask = m;
+    __set_PRIMASK(key);
 }
 
-// Uscita da modalità manuale (click lungo in pagina manuale)
 void Relay_ManualExit(void)
 {
     relay_manual_mode = 0;
-    // Non forziamo nessun cambiamento: i relè restano come li hai lasciati.
 }
 
-// Toggle di un singolo relè in manuale (0..N_RLY-1)
 void Relay_ManualToggle(uint8_t idx)
 {
-    if (idx >= N_RLY) return;
-
-    uint16_t bit = (uint16_t)(1u << idx);
-
-    if (relay_manual_mask & bit)
+    if (idx < N_RLY)
     {
-        // Stato desiderato: ON → user vuole OFF
-        relay_manual_mask &= (uint16_t)(~bit);
-
-        // Impulso OFF immediato
-        Relay_PulseOff(idx);
-        rlyStatus[idx] = ST_OFF;
-    }
-    else
-    {
-        // Stato desiderato: OFF → user vuole ON
-        relay_manual_mask |= bit;
-
-        // Impulso ON immediato
-        Relay_PulseOn(idx);
-        rlyStatus[idx] = ST_ON;
+        relay_manual_mask ^= (uint16_t)(1u << idx);
     }
 }
 
-// ---------------------------------------------------------------------------
-//                      LOGICA AUTOMATICA (DMX / ArtNet / sACN)
-// ---------------------------------------------------------------------------
-//
-//  RelayTask() viene chiamata ogni 1 ms.
-//
-//  - Se relay_manual_mode == 1:
-//        --> non fa NULLA, esce subito.
-//        --> i relè sono comandati SOLO da Relay_ManualToggle().
-//
-//  - Se relay_manual_mode == 0:
-//        --> logica originale basata su DMX / ArtNet / sACN
-//
-
-
-// ---------------------------------------------------------------------------
-//                AUTO protocol selection (dmx_mode == 3)
-// ---------------------------------------------------------------------------
+/* ISR TIM6: completa SEMPRE impulsi/guardie, anche con main bloccato.
+   Una bobina per uscita, inversione consentita solo dopo la guardia. */
+void Relay_PulseService1ms(void)
+{
+    if (!relay_initialized) return;
+    uint32_t now = HAL_GetTick();
+    uint16_t target = relay_manual_mode ? relay_manual_mask : relay_target_mask;
+    for (unsigned i = 0; i < N_RLY; ++i)
+    {
+        uint16_t bit = (uint16_t)(1u << i);
+        bool on = (target & bit) != 0;
+        if (phase[i] == 2 || phase[i] == 3)
+        {
+            if ((int32_t)(now - deadline[i]) < 0) continue;
+            HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[i], RLY_ON_PIN[i], GPIO_PIN_RESET);
+            HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[i], RLY_OFF_PIN[i], GPIO_PIN_RESET);
+            if (phase[i] == 2) stable_mask |= bit;
+            else stable_mask &= (uint16_t)~bit;
+            rlyStatus[i] = (stable_mask & bit) ? ST_ON : ST_OFF;
+            phase[i] = 4;
+            deadline[i] = now + RLY_GUARD;
+            continue;
+        }
+        if (phase[i] == 4)
+        {
+            if ((int32_t)(now - deadline[i]) < 0) continue;
+            phase[i] = 0;
+        }
+        if (phase[i] == 1)
+        {
+            if (on) phase[i] = 0;
+            else if ((int32_t)(now - deadline[i]) < 0) continue;
+        }
+        if (phase[i] == 0 && rlyStatus[i] != ST_UNKN && on == ((stable_mask & bit) != 0)) continue;
+        if (!on && phase[i] == 0 && !relay_manual_mode && off_timeout_s > 0)
+        {
+            phase[i] = 1;
+            deadline[i] = now + (uint32_t)off_timeout_s * 1000u;
+            continue;
+        }
+        phase[i] = on ? 2 : 3;
+        deadline[i] = now + RLY_PULSE;
+        HAL_GPIO_WritePin((GPIO_TypeDef *)(on ? RLY_ON_PORT[i] : RLY_OFF_PORT[i]),
+                          on ? RLY_ON_PIN[i] : RLY_OFF_PIN[i], GPIO_PIN_SET);
+    }
+}
 
 static const uint8_t s_prio_tbl[6][3] =
 {
-    {0, 1, 2}, // D, A, s
-    {0, 2, 1}, // D, s, A
-    {2, 0, 1}, // s, D, A
-    {2, 1, 0}, // s, A, D
-    {1, 0, 2}, // A, D, s
-    {1, 2, 0}, // A, s, D
+    {0,1,2}, {0,2,1}, {2,0,1}, {2,1,0}, {1,0,2}, {1,2,0}
 };
 
-static bool Relay_IsProtoAvailable(uint8_t proto)
+/* Seleziona livelli completi pubblicati, mai il buffer UART in costruzione. */
+static uint16_t Relay_GetSource(uint8_t proto, const uint8_t **data)
 {
-    const uint8_t *p = NULL;
-    uint16_t v = 0;
-
-    switch (proto)
+    *data = NULL;
+    if (proto == 0)
     {
-        case 0: // DMX fisico
-            return (dmx_timeout > 0);
-
-        case 1: // ArtNet
-            v = ArtNet_GetSlotsView(artnet_universe, &p);
-            return (v > 0 && p != NULL);
-
-        case 2: // sACN
-            v = sACN_GetSlotsView(sacn_universe, &p);
-            return (v > 0 && p != NULL);
-
-        default:
-            return false;
+        if (dmx_timeout == 0) return 0;
+        *data = (const uint8_t *)dmxRxBuffer;
+        return (uint16_t)dmxRxCount;
     }
+    if (proto == 1) return ArtNet_GetSlotsView(artnet_universe, data);
+    if (proto == 2) return sACN_GetSlotsView(sacn_universe, data);
+    return 0;
 }
 
-static uint8_t Relay_SelectAutoProto(uint8_t current)
-{
-    // current può essere sporco su reset/upgrade
-    if (current > 2) current = 0;
-
-    // Scegli SEMPRE il protocollo a priorità più alta tra quelli disponibili.
-    // Se un protocollo con priorità più alta torna disponibile, deve prevaricare
-    // immediatamente (comportamento richiesto in AUTO).
-    uint8_t pri = (proto_priority < 6) ? proto_priority : 0;
-
-    for (int k = 0; k < 3; k++)
-    {
-        uint8_t cand = s_prio_tbl[pri][k];
-        if (Relay_IsProtoAvailable(cand))
-            return cand;
-    }
-
-    // Nessuna disponibile: resta sull'ultima attiva (anche se "assente")
-    return current;
-}
-
+/* Main: pubblica in una sola scrittura i desiderati delle dodici uscite. */
 void RelayTask(void)
 {
-    // In modalità manuale, il driver automatico è completamente disabilitato
-    // per evitare che DMX/ArtNet/sACN interferiscano con i comandi manuali.
-    if (relay_manual_mode)
-        return;
-
-    // Timeout spegnimento relè: off_timeout_s (0..30s) -> ms
-    // Nota: il driver gira a tick 1ms.
-    int32_t off_dly_ms = (int32_t)off_timeout_s * 1000;
-    if (off_dly_ms < 0) off_dly_ms = 0;
-    if (off_dly_ms > 30000) off_dly_ms = 30000;
-
-    int i, j;
-    const volatile uint8_t *activeBuffer = NULL;
-    uint16_t slots_valid = 0; // 0 = nessun dato valido
-
-    // Indice canale di partenza (0..511)
-    uint16_t ch_idx = (dmx_address > 0) ? (uint16_t)(dmx_address - 1) : 0;
-    if (ch_idx > 511) ch_idx = 511;
-
-    // Sorgente in base a dmx_mode
-
-    // Determina sorgente attiva (Auto -> selezione runtime con priorità)
-    uint8_t src_mode = dmx_mode;
+    const uint8_t *data = NULL;
+    uint16_t count = 0;
     if (dmx_mode == 3)
     {
-        active_proto = Relay_SelectAutoProto(active_proto);
-        src_mode = active_proto;
+        uint8_t pri = proto_priority < 6 ? proto_priority : 0;
+        for (unsigned k = 0; k < 3; ++k)
+        {
+            count = Relay_GetSource(s_prio_tbl[pri][k], &data);
+            if (count)
+            {
+                active_proto = s_prio_tbl[pri][k];
+                break;
+            }
+        }
     }
     else
     {
-        // Modalità fissa (0..2)
         active_proto = dmx_mode;
+        count = Relay_GetSource(active_proto, &data);
     }
-
-    switch (src_mode)
+    uint16_t mask = 0;
+    unsigned address = dmx_address ? dmx_address - 1u : 0u;
+    for (unsigned i = 0; i < N_RLY; ++i)
     {
-        case 0: /* DMX fisico */
-            activeBuffer = dmxRxBuffer;
-            slots_valid  = 512;
-            break;
-
-        case 1: /* Art-Net */
-        {
-            const uint8_t *p = NULL;
-            uint16_t v = ArtNet_GetSlotsView(artnet_universe, &p);
-            activeBuffer = p;     // NULL se scaduto/assente --> “tutto zero”
-            slots_valid  = v;     // 0 se scaduto/assente
-        }
-        break;
-
-        case 2: /* sACN */
-        {
-            const uint8_t *p = NULL;
-            uint16_t v = sACN_GetSlotsView(sacn_universe, &p);
-            activeBuffer = p;     // può essere NULL se scaduto --> "tutto zero"
-            slots_valid  = v;     // 0 se scaduto
-        }
-        break;
-
-        case 3: /* Auto (TODO: selezione in base a proto_priority) */
-            // Per ora, comportamento neutro: usa DMX fisico.
-            activeBuffer = dmxRxBuffer;
-            slots_valid  = 512;
-            break;
-
-        default:
-            activeBuffer = NULL;
-            slots_valid  = 0;
-            break;
+        unsigned ch = address + i;
+        if (data && ch < count && ch < 512 && data[ch] > 127) mask |= (uint16_t)(1u << i);
     }
-
-    // Logica originale
-    for (i = 0, j = ch_idx; i < N_RLY && j < 512; i++, j++)
-    {
-        // Se non c'è dato valido o siamo oltre slots_valid, il livello è 0
-        uint8_t level = (activeBuffer && (j < slots_valid)) ? activeBuffer[j] : 0;
-
-        if (rlyTimer[i] > 0)                     // sequenza relay ON
-        {
-            rlyTimer[i]++;
-
-            if (rlyStatus[i] == ST_ON)
-            {
-                if (rlyTimer[i] > RLY_PULSE)
-                {
-                    rlyStatus[i] = ST_GUARD;
-                    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[i],
-                                      (uint16_t)RLY_ON_PIN[i],
-                                      GPIO_PIN_RESET);
-                }
-            }
-            else if (rlyTimer[i] > (RLY_PULSE + RLY_GUARD))
-            {
-                rlyTimer[i]  = 0;
-                rlyStatus[i] = ST_ON;
-            }
-        }
-        else if (rlyTimer[i] < 0)                // sequenza relay OFF
-        {
-            rlyTimer[i]--;
-
-            if (rlyStatus[i] == ST_OFF)
-            {
-                if (rlyTimer[i] < -((int32_t)off_dly_ms + RLY_PULSE))
-                {
-                    rlyStatus[i] = ST_GUARD;
-                    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[i],
-                                      (uint16_t)RLY_OFF_PIN[i],
-                                      GPIO_PIN_RESET);
-                }
-            }
-            else if (rlyStatus[i] == ST_GUARD)
-            {
-                if (rlyTimer[i] < -((int32_t)off_dly_ms + RLY_PULSE + RLY_GUARD))
-                {
-                    rlyTimer[i]  = 0;
-                    rlyStatus[i] = ST_OFF;
-                }
-            }
-            else if (level > 127)
-            {
-                rlyTimer[i] = 0;  // annulla sequenza OFF se torna alto
-            }
-            else if (rlyTimer[i] < -(int32_t)off_dly_ms)
-            {
-                rlyStatus[i] = ST_OFF;
-                HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_OFF_PORT[i],
-                                  (uint16_t)RLY_OFF_PIN[i],
-                                  GPIO_PIN_SET);
-            }
-        }
-        else // rlyTimer[i] == 0: nuovi comandi da livello corrente
-        {
-            if (level > 127)                     // richiesta ON
-            {
-                if (rlyStatus[i] != ST_ON)
-                {
-                    rlyTimer[i]  = 1;
-                    rlyStatus[i] = ST_ON;
-                    HAL_GPIO_WritePin((GPIO_TypeDef *)RLY_ON_PORT[i],
-                                      (uint16_t)RLY_ON_PIN[i],
-                                      GPIO_PIN_SET);
-                }
-            }
-            else // level < 128 → richiesta OFF
-            {
-                if (rlyStatus[i] != ST_OFF)
-                {
-                    rlyTimer[i] = -1; // parte la sequenza OFF (rispetta ritardi)
-                }
-            }
-        }
-    }
+    relay_target_mask = mask;
 }

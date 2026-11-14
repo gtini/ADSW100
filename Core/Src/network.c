@@ -27,11 +27,13 @@ typedef struct
     uint8_t  use_dhcp;        // 0=static, 1=DHCP
     uint32_t ip_be;           // IP in network order (big endian)
     uint32_t netmask_be;      // netmask in network order
+    uint32_t dns1_be;
+    uint32_t dns2_be;
     uint32_t gateway_be;      // gateway in network order
 } net_cfg_snapshot_t;
 
 // Nome lungo per evitare collisioni con macro/variabili
-static net_cfg_snapshot_t g_net_applied = { 0xFF, 0, 0, 0 };
+static net_cfg_snapshot_t g_net_applied = { .use_dhcp = 0xFF };
 
 void NET_SetStatic(uint32_t ip_be, uint32_t mask_be, uint32_t gw_be);
 void NETLED_Task_1ms(void);
@@ -141,8 +143,23 @@ void Network_LinkCheck_100ms(void)
     if (st == prev_state)
         return;      // nessun cambiamento
 
-    prev_state = st;
+    /* Il port MAC interno LAN9303 è RMII 100 full duplex, indipendente
+       dalla negoziazione delle due porte esterne. */
+    if (st > USER_PHY_STATUS_LINK_DOWN)
+    {
+        ETH_MACConfigTypeDef config;
+        if (HAL_ETH_GetMACConfig(&heth, &config) != HAL_OK) return;
+        config.Speed = ETH_SPEED_100M;
+        config.DuplexMode = ETH_FULLDUPLEX_MODE;
+        if (HAL_ETH_SetMACConfig(&heth, &config) != HAL_OK || HAL_ETH_Start_IT(&heth) != HAL_OK) return;
+        netif_set_up(&gnetif);
+    }
+    else
+    {
+        (void)HAL_ETH_Stop_IT(&heth);
+    }
 
+    prev_state = st;
     bool link_up = false;
 
     switch (st)
@@ -347,7 +364,7 @@ void Network_DiagTick_1s(void)
                     {
                         USB_Printf("ArtNet watchdog: restart listener\r\n");
                         ArtNet_StopListening();
-                        ArtNet_StartListening();
+                        art_listening = ArtNet_StartListening();
                         g_art_idle_s = 0;
                     }
                 }
@@ -372,7 +389,7 @@ void Network_DiagTick_1s(void)
                     {
                         USB_Printf("sACN watchdog: restart listener\r\n");
                         sACN_StopListening();
-                        sACN_StartListening();
+                        sacn_listening = sACN_StartListening();
                         g_sacn_idle_s = 0;
                     }
                 }
@@ -391,69 +408,15 @@ void Network_DiagTick_1s(void)
 /*                       IGMP --> filtro MAC multicast (STM32H7)                         */
 /* ===================================================================================== */
 
-/* Programma MAC Address 1 come filtro perfetto per l'indirizzo multicast */
-static void set_mac_address1_multicast(const uint8_t mac[6], bool enable)
-{
-    uint32_t high = ((uint32_t)mac[5] << 8) | (uint32_t)mac[4];
-    uint32_t low  = ((uint32_t)mac[3] << 24) |
-                    ((uint32_t)mac[2] << 16) |
-                    ((uint32_t)mac[1] << 8)  |
-                    (uint32_t)mac[0];
-
-    if (enable)
-    {
-        high |= ETH_MACA1HR_AE;  // Address Enable
-        // NB: ETH_MACA1HR_SA è 1 per SA, 0 per DA: lasciamo 0 = DA
-        // ETH_MACA1HR_MBC bits = mask (0 = match, 1 = don't care), default 0
-    }
-
-    heth.Instance->MACA1HR = high;
-    heth.Instance->MACA1LR = low;
-}
-
-/* === STM32H7: IGMP --> filtro MAC per-gruppo (Perfect Filter su MACA1 + flags) === */
+/* Il MAC accetta multicast, lwIP IGMP filtra i gruppi realmente iscritti.
+   Non usare uno slot perfect singolo: all-hosts e sACN devono coesistere. */
 static err_t ethernetif_igmp_mac_filter(struct netif *netif,
-                                        const ip4_addr_t *group, u8_t action)
+                                      const ip4_addr_t *group, u8_t action)
 {
     (void)netif;
-
-    /* 1) IP multicast → MAC 01:00:5E:xx:xx:xx (bit23=0) */
-    uint32_t g = lwip_htonl(group->addr);
-    uint8_t mac[6];
-    mac[0] = 0x01; mac[1] = 0x00; mac[2] = 0x5E;
-    mac[3] = (uint8_t)((g >> 16) & 0x7F);
-    mac[4] = (uint8_t)((g >> 8)  & 0xFF);
-    mac[5] = (uint8_t)( g        & 0xFF);
-
-    USB_Printf("IGMP: group=%s action=%s -> MAC=%02X:%02X:%02X:%02X:%02X:%02X\n",
-               ipaddr_ntoa(group),
-               (action == IGMP_ADD_MAC_FILTER) ? "ADD" : "DEL",
-               mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    /* 2) Programma lo slot MAC Address 1 come filtro perfetto (DA) */
-    /*    (hai già definito set_mac_address1_multicast(...)) */
-    set_mac_address1_multicast(mac, (action == IGMP_ADD_MAC_FILTER));
-
-    /* 3) Assicurati che il Packet Filter usi perfect/hash e NON pass-all */
-#ifdef ETH_MACPFR_HPF
-    SET_BIT(heth.Instance->MACPFR, ETH_MACPFR_HPF);  /* Hash/Perfect filter abilitato */
-#endif
-#ifdef ETH_MACPFR_PM
-    CLEAR_BIT(heth.Instance->MACPFR, ETH_MACPFR_PM); /* NO PassAll multicast */
-#endif
-#ifdef ETH_MACPFR_HMC
-    /* opzionale: tieni anche hash multicast abilitato (utile se userai MACA2/3) */
-    SET_BIT(heth.Instance->MACPFR, ETH_MACPFR_HMC);
-#endif
-
-    /* 4) (Opzionale) pulisci eventuale hash table residua se vuoi essere “strict” */
-    /* heth.Instance->MACHT1R = 0; */
-    /* heth.Instance->MACHT0R = 0; */
-
-    /* 5) Debug registri utili */
-    USB_Printf("MACPFR=%08lX  MACA1HR=%08lX  MACA1LR=%08lX\n",
-               heth.Instance->MACPFR, heth.Instance->MACA1HR, heth.Instance->MACA1LR);
-
+    (void)group;
+    (void)action;
+    SET_BIT(heth.Instance->MACPFR, ETH_MACPFR_PM);
     return ERR_OK;
 }
 
@@ -520,15 +483,13 @@ void NetIf_ApplyConfigFromEeprom(void)
         if (dns1)
         {
             ip_addr_t a; ip_addr_set_zero(&a);
-            a.type = IPADDR_TYPE_V4;
-            a.u_addr.ip4.addr = dns1;
+            ip_2_ip4(&a)->addr = dns1;
             dns_setserver(0, &a);
         }
         if (dns2)
         {
             ip_addr_t a; ip_addr_set_zero(&a);
-            a.type = IPADDR_TYPE_V4;
-            a.u_addr.ip4.addr = dns2;
+            ip_2_ip4(&a)->addr = dns2;
             dns_setserver(1, &a);
         }
     #endif
@@ -619,14 +580,12 @@ static void start_stream_listeners(void)
 {
     if (!art_listening)
     {
-        ArtNet_StartListening();
-        art_listening = true;
+        art_listening = ArtNet_StartListening();
     }
 
     if (!sacn_listening)
     {
-        sACN_StartListening();
-        sacn_listening = true;
+        sacn_listening = sACN_StartListening();
     }
     USB_Printf("Listeners ON (ArtNet=%d, sACN=%d)\r\n", art_listening, sacn_listening);
 }
@@ -778,11 +737,40 @@ static err_t netled_input_wrapper(struct pbuf *p, struct netif *netif)
     return r;
 }
 
+/* TX sincrono HAL con errori propagati a lwIP; i payload restano validi
+   fino al ritorno e vengono puliti in cache prima dell'accesso DMA. */
 static err_t netled_linkoutput_wrapper(struct netif *netif, struct pbuf *p)
 {
-    err_t r = s_orig_linkoutput ? s_orig_linkoutput(netif, p) : ERR_IF;
-    if (r == ERR_OK) NETLED_OnEthActivity();     // TX riuscito → attività
-    return r;
+    (void)netif;
+    ETH_BufferTypeDef buffers[ETH_TX_DESC_CNT] = {0};
+    ETH_TxPacketConfig config = {0};
+    unsigned i = 0;
+    for (struct pbuf *q = p; q; q = q->next)
+    {
+        if (i >= ETH_TX_DESC_CNT) return ERR_IF;
+        buffers[i].buffer = q->payload;
+        buffers[i].len = q->len;
+        if (i) buffers[i - 1].next = &buffers[i];
+        uintptr_t address = (uintptr_t)q->payload;
+        if (address >= 0x20000000u && address < 0x40000000u)
+        {
+            uintptr_t aligned = address & ~(uintptr_t)31u;
+            SCB_CleanDCache_by_Addr((uint32_t *)aligned, (int32_t)((address + q->len + 31u - aligned) & ~31u));
+        }
+        ++i;
+    }
+    config.Attributes = ETH_TX_PACKETS_FEATURES_CSUM | ETH_TX_PACKETS_FEATURES_CRCPAD;
+    config.ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC;
+    config.CRCPadCtrl = ETH_CRC_PAD_INSERT;
+    config.Length = p->tot_len;
+    config.TxBuffer = buffers;
+    HAL_StatusTypeDef st = HAL_ETH_Transmit(&heth, &config, 2);
+    if (st == HAL_OK)
+    {
+        NETLED_OnEthActivity();
+        return ERR_OK;
+    }
+    return st == HAL_BUSY ? ERR_MEM : ERR_IF;
 }
 
 /* gnetif creato (da MX_LWIP_Init()) */
@@ -832,6 +820,15 @@ void Network_InitAfterLwip(void)
 
 void NetworkTask(void)
 {
+    /* Retry limitato se PCB o bind non erano disponibili. */
+    static uint32_t retry_at;
+    uint32_t now = HAL_GetTick();
+    if ((!art_listening || !sacn_listening) && now - retry_at >= 1000u &&
+        netif_is_link_up(&gnetif) && !ip4_addr_isany_val(*netif_ip4_addr(&gnetif)))
+    {
+        retry_at = now;
+        start_stream_listeners();
+    }
     // 1) LED (blink su activity + stato link)
     NETLED_Task_1ms();
 
@@ -854,6 +851,24 @@ void NetworkTask(void)
         }
     }
 
+    bool dns_changed = g_net_applied.dns1_be != dns1 || g_net_applied.dns2_be != dns2;
+#if LWIP_DNS
+    if (dns_changed || changed)
+    {
+        if (!d_use_dhcp)
+        {
+            ip_addr_t a;
+            ip_addr_set_zero(&a);
+            ip_2_ip4(&a)->addr = dns1;
+            dns_setserver(0, &a);
+            ip_2_ip4(&a)->addr = dns2;
+            dns_setserver(1, &a);
+        }
+    }
+#endif
+    g_net_applied.dns1_be = dns1;
+    g_net_applied.dns2_be = dns2;
+    (void)dns_changed;
     if (!changed) return;
 
     // 4) Applica subito

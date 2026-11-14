@@ -17,10 +17,10 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 /* USER CODE BEGIN Includes */
+#include "stm32h7xx_hal_eth.h"
 
 /* USER CODE END Includes */
 
@@ -77,5 +77,91 @@ void HAL_MspInit(void)
 }
 
 /* USER CODE BEGIN 1 */
+
+/* Ripristino MSP Ethernet del PHY custom dopo rigenerazione CubeMX. */
+void HAL_ETH_MspInit(ETH_HandleTypeDef* ethHandle)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  if(ethHandle->Instance==ETH)
+  {
+    /* Abilita clock periferica Ethernet. */
+    __HAL_RCC_ETH1MAC_CLK_ENABLE();
+    __HAL_RCC_ETH1TX_CLK_ENABLE();
+    __HAL_RCC_ETH1RX_CLK_ENABLE();
+
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    /* Configurazione pin RMII Ethernet
+    PC1     ------> ETH_MDC
+    PA1     ------> ETH_REF_CLK
+    PA2     ------> ETH_MDIO
+    PA7     ------> ETH_CRS_DV
+    PC4     ------> ETH_RXD0
+    PC5     ------> ETH_RXD1
+    PB11     ------> ETH_TX_EN
+    PB12     ------> ETH_TXD0
+    PB13     ------> ETH_TXD1
+    */
+    GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF11_ETH;
+    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF11_ETH;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF11_ETH;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* Abilita interrupt Ethernet. */
+    HAL_NVIC_SetPriority(ETH_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(ETH_IRQn);
+  }
+}
+
+void HAL_ETH_MspDeInit(ETH_HandleTypeDef* ethHandle)
+{
+  if(ethHandle->Instance==ETH)
+  {
+    /* Disabilita clock periferica Ethernet. */
+    __HAL_RCC_ETH1MAC_CLK_DISABLE();
+    __HAL_RCC_ETH1TX_CLK_DISABLE();
+    __HAL_RCC_ETH1RX_CLK_DISABLE();
+
+    /* Configurazione pin RMII Ethernet
+    PC1     ------> ETH_MDC
+    PA1     ------> ETH_REF_CLK
+    PA2     ------> ETH_MDIO
+    PA7     ------> ETH_CRS_DV
+    PC4     ------> ETH_RXD0
+    PC5     ------> ETH_RXD1
+    PB11     ------> ETH_TX_EN
+    PB12     ------> ETH_TXD0
+    PB13     ------> ETH_TXD1
+    */
+    HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5);
+
+    HAL_GPIO_DeInit(GPIOA, GPIO_PIN_1|GPIO_PIN_2|GPIO_PIN_7);
+
+    HAL_GPIO_DeInit(GPIOB, GPIO_PIN_11|GPIO_PIN_12|GPIO_PIN_13);
+
+    /* Disabilita interrupt Ethernet. */
+    HAL_NVIC_DisableIRQ(ETH_IRQn);
+
+  }
+}
+
+
 
 /* USER CODE END 1 */

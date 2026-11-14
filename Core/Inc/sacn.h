@@ -37,6 +37,8 @@ extern "C" {
 #endif
 
 void sACN_ResetJoinState(void);
+/* Main: invalida sorgenti e livelli quando cambia configurazione/trasporto. */
+void sACN_ResetData(void);
 
 /* DB: trova/crea universo (lazy) */
 sacn_universe_t* sACN_FindUniverse(uint16_t universe, bool allow_create);
@@ -53,10 +55,10 @@ void sACN_OnDataPacket(uint16_t universe,
                        const uint8_t *levels,
                        uint16_t level_count,
                        const ip_addr_t *src_ip,
-                       uint16_t src_port);
+                       uint16_t src_port, const uint8_t cid[16], uint8_t options);
 
 /* UDP listener */
-void sACN_StartListening(void);
+bool sACN_StartListening(void);
 void sACN_StopListening(void);
 
 /* IGMP join/leave per un universo */

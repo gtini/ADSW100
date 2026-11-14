@@ -425,10 +425,17 @@ void HardFactoryReset(void)
     if (EE_InitMemory() == HAL_OK)
         USB_Printf("HFR: EEPROM defaults OK\r\n");
     else
+    {
         USB_Printf("HFR: EE_InitMemory() FAILED\r\n");
+        return;
+    }
 
-    // 2) Ricarica i default in RAM
-    (void)EE_LoadConfig();
+    // 2) Ricarica i default in RAM soltanto dopo lettura verificata.
+    if (EE_LoadConfig() != HAL_OK)
+    {
+        USB_Printf("HFR: EEPROM reload FAILED\r\n");
+        return;
+    }
 
     // 3) NFC reset + riscrittura MAGIC/JSON
     if (NFC_I2C_InitQuickReaddress(&hi2c1))
@@ -523,8 +530,8 @@ static int Startup_SimpleUnlock(void)
       if (strcmp(p, expected) == 0)
       {
         HardFactoryReset();
-        USB_Printf("Unlock OK: factory reset done.\r\n");
-        return 1;
+        USB_Printf("Unlock FAILED: factory reset returned without reboot.\r\n");
+        return 0;
       }
       else
       {
@@ -549,6 +556,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     if (htim->Instance == TIM6)
     {
         // Tick applicativo a 1ms
+        Relay_PulseService1ms();
         timer_1ms_flag = true;
     }
 }
@@ -618,10 +626,10 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
-  MX_LWIP_Init();
   MX_USB_DEVICE_Init();
   MX_TIM6_Init();
   MX_IWDG1_Init();
+  MX_LWIP_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
 
@@ -715,6 +723,7 @@ int main(void)
 	  if (timer_1ms_flag)
 	  {
 		  timer_1ms_flag = false;
+		  DMX512_Service();
 		  task_1ms();
 	  }
 
@@ -743,25 +752,24 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI
                               |RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSIState = RCC_HSI_DIV1;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 5;
-  RCC_OscInitStruct.PLL.PLLN = 48;
+  RCC_OscInitStruct.PLL.PLLN = 192;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 5;
+  RCC_OscInitStruct.PLL.PLLQ = 15;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
@@ -776,15 +784,15 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
                               |RCC_CLOCKTYPE_D3PCLK1|RCC_CLOCKTYPE_D1PCLK1;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.SYSCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_APB3_DIV2;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_APB1_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_APB2_DIV2;
-  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV1;
+  RCC_ClkInitStruct.APB4CLKDivider = RCC_APB4_DIV2;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     Error_Handler();
   }

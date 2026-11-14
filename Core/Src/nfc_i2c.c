@@ -410,7 +410,8 @@ void NFC_BootApplyIfValid(void)
     I2C_HandleTypeDef *hi2c = &hi2c1;
 
     if (EE_LoadConfig() != HAL_OK) {
-        USB_Printf("EEPROM: load failed, using defaults\r\n");
+        USB_Printf("EEPROM: load failed, NFC apply skipped\r\n");
+        return;
     }
 
     if (!NFC_I2C_InitQuickReaddress(hi2c)) {
@@ -459,9 +460,13 @@ void NFC_BootApplyIfValid(void)
       (strcmp(n_ip,g_ip)==0) && (strcmp(n_mask,g_mask)==0) && (strcmp(n_gw,g_gw)==0);
 
     if (!same) {
-        apply_config_vars(n_dmx_mode, n_universe, n_net, n_subuni, n_prio,
-                          n_dhcp, n_ip, n_mask, n_gw);
-        (void)EE_SaveConfig();
+        if (!apply_config_vars(n_dmx_mode, n_universe, n_net, n_subuni, n_prio,
+                               n_dhcp, n_ip, n_mask, n_gw)) return;
+        if (EE_SaveConfig() != HAL_OK)
+        {
+            USB_Printf("NFC: EEPROM save FAILED\r\n");
+            return;
+        }
         USB_Printf("NFC: applied & EEPROM updated from NDEF\r\n");
     } else {
         USB_Printf("NFC: NDEF == EEPROM -> no changes\r\n");
@@ -480,21 +485,10 @@ void NFC_Service(void)
     if (!NFC_I2C_InitQuickReaddress(&hi2c1)) return;
     (void)NFC_FormatIfVirgin(&hi2c1);
 
-    /* niente magic-gating qui: la apply si fa solo una volta al boot */
-    if (!applied_once) {
-        char json[768];
-        if (ndef_get_cfg_json(&hi2c1, json, sizeof json)) {
-            char mg[64]; uint8_t dm, net, su; uint16_t uni, pr; bool dh;
-            char ip[16], mk[16], gw[16];
-            if (json_to_cfg_vars(json, mg, sizeof mg,
-                                 &dm,&uni,&net,&su,&pr,&dh, ip,mk,gw)) {
-                apply_config_vars(dm,uni,net,su,pr,dh,ip,mk,gw);
-                (void)EE_SaveConfig();
-                strncpy(last_json, json, sizeof(last_json)-1);
-                last_json[sizeof(last_json)-1] = '\0';
-                have_cache = true;
-            }
-        }
+    /* Unico percorso boot: magic, versione, range e stato EEPROM verificati. */
+    if (!applied_once)
+    {
+        NFC_BootApplyIfValid();
         applied_once = true;
         return;
     }

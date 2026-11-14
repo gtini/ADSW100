@@ -46,6 +46,8 @@ extern volatile _DMX_FLAGS dmxFlags;
 
 // prototipi pubblici
 
+/* Main: pubblica frame completo e applica timeout monotono di 1000 ms. */
+void DMX512_Service(void);
 void InitDMX512(UART_HandleTypeDef *huart);
 void DMX512UARTInterrupt(UART_HandleTypeDef *huart);
 

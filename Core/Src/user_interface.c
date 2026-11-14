@@ -22,11 +22,11 @@
 HAL_StatusTypeDef EE_Read(uint16_t memAddr, uint8_t* buf, uint16_t len);
 HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len);
 uint8_t  EE_ReadU8(uint16_t addr);
-void     EE_WriteU8(uint16_t addr, uint8_t v);
+HAL_StatusTypeDef EE_WriteU8(uint16_t addr, uint8_t v);
 uint16_t EE_ReadU16(uint16_t addr);
-void     EE_WriteU16(uint16_t addr, uint16_t v);
+HAL_StatusTypeDef EE_WriteU16(uint16_t addr, uint16_t v);
 uint32_t EE_ReadU32(uint16_t addr);
-void     EE_WriteU32(uint16_t addr, uint32_t v);
+HAL_StatusTypeDef EE_WriteU32(uint16_t addr, uint32_t v);
 HAL_StatusTypeDef EE_LoadConfig(void);
 
 // Encoder/pulsante --> input
@@ -119,105 +119,30 @@ static uint8_t s_manual_confirm_sel = 0;
 #define UI_FONT LCD_FONT_8
 #endif
 
+/* Main: join idempotente ripetuto anche dopo link flap; snapshot aggiornato
+   soltanto dopo operazioni riuscite, retry senza attese al prossimo poll. */
 void NET_ApplyFromConfig(void)
 {
-    static bool     inited = false;
-    static uint16_t prev_sacn_universe   = 0;
-    static uint8_t  prev_transport       = 0xFF;   // 0=multicast, 1=unicast
-    static uint16_t prev_artnet_universe = 0xFFFF;
-
-    static bool last_allowed = false;
-
-    bool allowed = g_link_up;
-
-#if LWIP_DHCP
-    if (use_dhcp)
-        allowed = allowed && (g_ip_runtime_be != 0U);
-#endif
-
-    if (!allowed)
+    static uint16_t previous_universe;
+    static uint8_t previous_transport = 0xFF;
+    if (!g_link_up || !g_ip_runtime_be) return;
+    if (previous_universe != sacn_universe || previous_transport != sacn_transport)
     {
-        if (last_allowed)
-            USB_Printf("[NET] ApplyFromConfig skipped: link/ip not ready\n");
-
-        last_allowed = false;
-        inited = false;    // forza re-init quando torna la rete
+        if (previous_transport == 0 && previous_universe && !sACN_LeaveUniverse(previous_universe))
+        {
+            NET_ScheduleApply();
+            return;
+        }
+        sACN_ResetData();
+    }
+    if (sacn_transport == 0 && !sACN_JoinUniverse(sacn_universe))
+    {
+        NET_ScheduleApply();
         return;
     }
-
-    if (!last_allowed)
-    {
-        USB_Printf("[NET] ApplyFromConfig allowed (link/ip ok)\n");
-
-        /* Primo giro dopo rete OK: forza apply completo */
-        prev_sacn_universe   = 0;
-        prev_transport       = 0xFF;
-        prev_artnet_universe = 0xFFFF;
-        inited = false;
-    }
-
-    last_allowed = true;
-
-    USB_Printf("[NET] ApplyFromConfig RUN: link=%d ip=0x%08lX sacnU=%u tr=%u artU=%u\n",
-               (int)g_link_up,
-               (unsigned long)g_ip_runtime_be,
-               (unsigned)sacn_universe,
-               (unsigned)sacn_transport,
-               (unsigned)artnet_universe);
-
-    if (!inited)
-    {
-        if (sacn_universe >= 1)
-        {
-            if (sacn_transport == 0)
-            {
-                (void)sACN_JoinUniverse(sacn_universe);   // multicast
-            } else {
-                /* unicast: nessun IGMP, il filtro in sacn_rx_cb pensa a scartare */
-            }
-        }
-        (void)ArtNet_FindUniverse(artnet_universe, true);
-
-        prev_sacn_universe   = sacn_universe;
-        prev_transport       = sacn_transport;
-        prev_artnet_universe = artnet_universe;
-        inited = true;
-        return;
-    }
-
-    /* ---- sACN: cambi di universe o transport ---- */
-    if (prev_sacn_universe != sacn_universe || prev_transport != sacn_transport)
-    {
-        /* Se prima eri in multicast, lascia il gruppo vecchio */
-        if (prev_transport == 0 && prev_sacn_universe >= 1)
-        {
-            (void)sACN_LeaveUniverse(prev_sacn_universe);
-        }
-
-        /* Applica lo stato nuovo */
-        if (sacn_universe >= 1)
-        {
-            if (sacn_transport == 0)
-            {
-                /* multicast: entra nel nuovo gruppo */
-                (void)sACN_JoinUniverse(sacn_universe);
-            }
-            else
-            {
-                /* unicast: nessun IGMP; il filtro in RX farà il resto */
-            }
-        }
-
-        prev_sacn_universe = sacn_universe;
-        prev_transport     = sacn_transport;
-    }
-
-    /* ---- Art-Net: cambio universe ---- */
-    if (prev_artnet_universe != artnet_universe)
-    {
-        (void)ArtNet_FindUniverse(artnet_universe, true);
-        prev_artnet_universe = artnet_universe;
-    }
+    previous_universe = sacn_universe;
+    previous_transport = sacn_transport;
+    (void)ArtNet_FindUniverse(artnet_universe, true);
 }
 
 static void LCD_ClearRow(uint8_t row)
@@ -873,7 +798,7 @@ static void handle_page_mode_event(ui_event_t ev)
             {
                 // salva subito
                 if (dmx_mode > 3) dmx_mode = 0;
-                EE_WriteU8(EE_OFFS_DMX_MODE, dmx_mode);
+                if (EE_WriteU8(EE_OFFS_DMX_MODE, dmx_mode) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                 NET_ScheduleApply();
                 LCD_EditMarker(2, false);
                 g_ui.editing = false;
@@ -931,7 +856,7 @@ static void handle_page_dmx_event(ui_event_t ev)
                 // Conferma e salva SUBITO in EEPROM
                 if (dmx_address < 1)   dmx_address = 1;
                 if (dmx_address > 512) dmx_address = 512;
-                EE_WriteU16(EE_OFFS_DMX_ADDR, dmx_address);
+                if (EE_WriteU16(EE_OFFS_DMX_ADDR, dmx_address) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                 LCD_EditMarker(2, false);
                 g_ui.editing = false;
                 LCD_DrawToast("Saved");
@@ -1001,7 +926,7 @@ static void handle_page_net_event(ui_event_t ev)
         if (s_net_sel == 0) {
             // Toggle DHCP e salva subito
             use_dhcp ^= 1;
-            EE_Write(EE_OFFS_USE_DHCP, (uint8_t[]){use_dhcp}, 1);
+            if (EE_Write(EE_OFFS_USE_DHCP, (uint8_t[]){use_dhcp}, 1) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
             NET_ScheduleApply();
             g_ui.editing = false;
             LCD_DrawToast("Saved");
@@ -1012,7 +937,7 @@ static void handle_page_net_event(ui_event_t ev)
         if (use_dhcp) {
             // se era ON, spegni e salva prima di entrare in edit
             use_dhcp = 0;
-            EE_Write(EE_OFFS_USE_DHCP, (uint8_t[]){0}, 1);
+            if (EE_Write(EE_OFFS_USE_DHCP, (uint8_t[]){0}, 1) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
             NET_ScheduleApply();
             LCD_DrawToast("DHCP OFF");
             break;
@@ -1026,11 +951,11 @@ static void handle_page_net_event(ui_event_t ev)
         } else {
             // SALVA l’IP/mask/DNS/gw completo ad ogni click
             switch (s_net_sel) {
-            case 1: EE_WriteU32(EE_OFFS_IP,      ip_address);  break;
-            case 2: EE_WriteU32(EE_OFFS_NETMASK, net_mask);    break;
-            case 3: EE_WriteU32(EE_OFFS_DNS1,    dns1);        break;
-            case 4: EE_WriteU32(EE_OFFS_DNS2,    dns2);        break;
-            case 5: EE_WriteU32(EE_OFFS_GATEWAY, gateway);     break;
+            case 1: if (EE_WriteU32(EE_OFFS_IP,      ip_address) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }  break;
+            case 2: if (EE_WriteU32(EE_OFFS_NETMASK, net_mask) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }    break;
+            case 3: if (EE_WriteU32(EE_OFFS_DNS1,    dns1) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }        break;
+            case 4: if (EE_WriteU32(EE_OFFS_DNS2,    dns2) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }        break;
+            case 5: if (EE_WriteU32(EE_OFFS_GATEWAY, gateway) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }     break;
             }
             NET_ScheduleApply();
 
@@ -1081,7 +1006,7 @@ static void handle_page_anet_event(ui_event_t ev)
 
         case EVT_ENC_RIGHT:
         {
-            if (g_ui.editing)
+            if (g_ui.editing && artnet_universe < 32767)
             {
                 artnet_universe++;
             }
@@ -1097,7 +1022,7 @@ static void handle_page_anet_event(ui_event_t ev)
             }
             else
             {
-                EE_WriteU16(EE_OFFS_ARTNET_UNI, artnet_universe);
+                if (EE_WriteU16(EE_OFFS_ARTNET_UNI, artnet_universe) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                 LCD_EditMarker(2, false);
                 g_ui.editing = false;
                 NET_ScheduleApply();
@@ -1166,7 +1091,7 @@ static void handle_page_sacn_event(ui_event_t ev)
         {
             // Toggle Multicast / Unicast + salva subito
             sacn_transport ^= 1; // 0=Multicast, 1=Unicast
-            EE_Write(EE_OFFS_SACN_TRANSPORT, (uint8_t[]){sacn_transport}, 1);
+            if (EE_Write(EE_OFFS_SACN_TRANSPORT, (uint8_t[]){sacn_transport}, 1) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
             NET_ScheduleApply();
             LCD_DrawToast("Saved");
         }
@@ -1186,12 +1111,12 @@ static void handle_page_sacn_event(ui_event_t ev)
                 {
                     if (sacn_universe < 1)     sacn_universe = 1;
                     if (sacn_universe > 63999) sacn_universe = 63999;
-                    EE_WriteU16(EE_OFFS_SACN_UNI, sacn_universe);
+                    if (EE_WriteU16(EE_OFFS_SACN_UNI, sacn_universe) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                 }
                 else if (s_sacn_sel == 2)
                 {
                     if (sacn_min_prio > 200) sacn_min_prio = 200;
-                    EE_Write(EE_OFFS_SACN_MIN_PRIO, (uint8_t[]){sacn_min_prio}, 1);
+                    if (EE_Write(EE_OFFS_SACN_MIN_PRIO, (uint8_t[]){sacn_min_prio}, 1) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                 }
 
                 NET_ApplyFromConfig();
@@ -1290,17 +1215,17 @@ static void handle_page_sys_event(ui_event_t ev)
                 {
                     if (s_sys_sel == 0)
                     {
-                        EE_WriteU8(EE_OFFS_LCD_BACKLIGHT, lcd_backlight);
+                        if (EE_WriteU8(EE_OFFS_LCD_BACKLIGHT, lcd_backlight) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                     }
                     else if (s_sys_sel == 1)
                     {
                         if (off_timeout_s > 30) off_timeout_s = 30;
-                        EE_WriteU8(EE_OFFS_OFF_TIMEOUT_S, off_timeout_s);
+                        if (EE_WriteU8(EE_OFFS_OFF_TIMEOUT_S, off_timeout_s) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                     }
                     else // s_sys_sel == 2
                     {
                         if (proto_priority > 5) proto_priority = 0;
-                        EE_WriteU8(EE_OFFS_PROTO_PRIORITY, proto_priority);
+                        if (EE_WriteU8(EE_OFFS_PROTO_PRIORITY, proto_priority) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
                     }
 
                     g_ui.editing = false;

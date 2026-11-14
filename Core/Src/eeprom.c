@@ -27,9 +27,9 @@ uint8_t EE_ReadU8(uint16_t addr)
     return b;
 }
 
-void EE_WriteU8(uint16_t addr, uint8_t v)
+HAL_StatusTypeDef EE_WriteU8(uint16_t addr, uint8_t v)
 {
-    (void)EE_Write(addr, &v, 1);
+    return EE_Write(addr, &v, 1);
 }
 
 uint16_t EE_ReadU16(uint16_t addr)
@@ -39,31 +39,31 @@ uint16_t EE_ReadU16(uint16_t addr)
     return (uint16_t)((b[0] << 8) | b[1]);
 }
 
-void EE_WriteU16(uint16_t addr, uint16_t v)
+HAL_StatusTypeDef EE_WriteU16(uint16_t addr, uint16_t v)
 {
     uint8_t b[2] = { (uint8_t)(v >> 8), (uint8_t)(v & 0xFF) };
-    (void)EE_Write(addr, b, 2);
+    return EE_Write(addr, b, 2);
 }
 
 uint32_t EE_ReadU32(uint16_t addr)
 {
     uint8_t b[4] = {0};
     if (EE_Read(addr, b, 4) != HAL_OK) return 0;
-    return (uint32_t)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
+    return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
 }
 
-void EE_WriteU32(uint16_t addr, uint32_t v)
+HAL_StatusTypeDef EE_WriteU32(uint16_t addr, uint32_t v)
 {
     uint8_t b[4] = {
         (uint8_t)(v >> 24), (uint8_t)(v >> 16), (uint8_t)(v >> 8), (uint8_t)v
     };
-    (void)EE_Write(addr, b, 4);
+    return EE_Write(addr, b, 4);
 }
 
 HAL_StatusTypeDef EE_Read(uint16_t memAddr, uint8_t* buf, uint16_t len)
 {
     if (!buf) return HAL_ERROR;
-    if ((memAddr + len) > EE_SIZE) return HAL_ERROR;
+    if (memAddr > EE_SIZE || len > EE_SIZE - memAddr) return HAL_ERROR;
     return HAL_I2C_Mem_Read(&hi2c1, (EE_I2C_ADDR_7B << 1), memAddr,
                             I2C_MEMADD_SIZE_8BIT, buf, len, 100);
 }
@@ -71,7 +71,7 @@ HAL_StatusTypeDef EE_Read(uint16_t memAddr, uint8_t* buf, uint16_t len)
 HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len)
 {
     if (!buf) return HAL_ERROR;
-    if ((memAddr + len) > EE_SIZE) return HAL_ERROR;
+    if (memAddr > 128u || len > 128u - memAddr) return HAL_ERROR;
 
     // 24AA02E48: page size = 8 byte
     const uint8_t page = 8;
@@ -90,6 +90,10 @@ HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len)
 
         st = EE_WaitWrite();
         if (st != HAL_OK) return st;
+        uint8_t verify[8];
+        st = EE_Read((uint16_t)(memAddr + off), verify, chunk);
+        if (st != HAL_OK) return st;
+        if (memcmp(verify, buf + off, chunk) != 0) return HAL_ERROR;
 
         off = (uint16_t)(off + chunk);
     }
@@ -179,135 +183,118 @@ HAL_StatusTypeDef EE_GetLocalMAC48(uint8_t mac[6])
 
 // ---------- Carica la configurazione ----------
 
+/* Decodifica legacy, senza dipendere da allineamento o layout di struct C. */
+static uint16_t EE_U16(const uint8_t *b)
+{
+    return (uint16_t)((uint16_t)b[0] << 8 | b[1]);
+}
+
+static uint32_t EE_U32(const uint8_t *b)
+{
+    return (uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | b[3];
+}
+
+static void EE_Put16(uint8_t *b, uint16_t v)
+{
+    b[0] = v >> 8;
+    b[1] = v;
+}
+
+static void EE_Put32(uint8_t *b, uint32_t v)
+{
+    b[0] = v >> 24;
+    b[1] = v >> 16;
+    b[2] = v >> 8;
+    b[3] = v;
+}
+
+/* Lettura unica verificata; nessuna riparazione persistente o migrazione. */
 HAL_StatusTypeDef EE_LoadConfig(void)
 {
-    if (EE_ReadU16(EE_OFFS_INIT) != EE_INIT_VALUE)
-        return HAL_ERROR;   // EEPROM non inizializzata
-
-    use_dhcp       = EE_ReadU8 (EE_OFFS_USE_DHCP);
-    ip_address     = EE_ReadU32(EE_OFFS_IP);
-    net_mask       = EE_ReadU32(EE_OFFS_NETMASK);
-    gateway        = EE_ReadU32(EE_OFFS_GATEWAY);
-    dns1           = EE_ReadU32(EE_OFFS_DNS1);
-    dns2           = EE_ReadU32(EE_OFFS_DNS2);
-    dmx_address    = EE_ReadU16(EE_OFFS_DMX_ADDR);
-    dmx_mode       = EE_ReadU8 (EE_OFFS_DMX_MODE);
-    artnet_universe= EE_ReadU16(EE_OFFS_ARTNET_UNI);
-    sacn_universe  = EE_ReadU16(EE_OFFS_SACN_UNI);
-    sacn_transport = EE_ReadU8 (EE_OFFS_SACN_TRANSPORT);
-    sacn_min_prio  = EE_ReadU8 (EE_OFFS_SACN_MIN_PRIO);
-    lcd_backlight  = EE_ReadU8 (EE_OFFS_LCD_BACKLIGHT);
-
-    // System (v1.3.1+)
-    off_timeout_s  = EE_ReadU8 (EE_OFFS_OFF_TIMEOUT_S);
-    proto_priority = EE_ReadU8 (EE_OFFS_PROTO_PRIORITY);
-
-    if (dmx_address < 1 || dmx_address > 512) dmx_address = 1;
-    if (dmx_mode > 3) dmx_mode = CFG_DEFAULT_DMX_MODE;
-
-    // Protocollo attivo runtime: all'avvio, se Auto parte da DMX (0)
-    active_proto = (dmx_mode <= 2) ? dmx_mode : 0;
-    if (sacn_min_prio > 200) sacn_min_prio = 200;
-
-    // Compatibilità aggiornamenti: se in EEPROM c'è spazzatura (device vecchi)
-    // imposta default e riscrive.
-    if (off_timeout_s > 30) {
-        off_timeout_s = CFG_DEFAULT_OFF_TIMEOUT_S;
-        EE_WriteU8(EE_OFFS_OFF_TIMEOUT_S, off_timeout_s);
-    }
-    if (proto_priority > 5) {
-        proto_priority = CFG_DEFAULT_PROTO_PRIORITY;
-        EE_WriteU8(EE_OFFS_PROTO_PRIORITY, proto_priority);
-    }
-
-    // Controlla netmask
-    if (!use_dhcp)
+    uint8_t b[EE_OFFS_PROTO_PRIORITY + 1];
+    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (st != HAL_OK) return st;
+    if (EE_U16(b) != EE_INIT_VALUE || b[EE_OFFS_USE_DHCP] > 1 ||
+        EE_U16(b + EE_OFFS_DMX_ADDR) < 1 || EE_U16(b + EE_OFFS_DMX_ADDR) > 512 ||
+        b[EE_OFFS_DMX_MODE] > 3 || EE_U16(b + EE_OFFS_ARTNET_UNI) > 32767 ||
+        EE_U16(b + EE_OFFS_SACN_UNI) < 1 || EE_U16(b + EE_OFFS_SACN_UNI) > 63999 ||
+        b[EE_OFFS_SACN_TRANSPORT] > 1 || b[EE_OFFS_SACN_MIN_PRIO] > 200)
     {
-        // in STATICO: 0.0.0.0 --> sicuramente sbagliata
-        if (net_mask == 0)
-        {
-            g_netmask_bad = 1;
-            USB_Printf("WARNING: NETMASK is 0.0.0.0 (invalid in static mode)\r\n");
-        }
-        else
-        {
-            g_netmask_bad = 0;
-        }
+        return HAL_ERROR;
     }
-    else
-    {
-        // in DHCP non controllare netmask
-        g_netmask_bad = 0;
-    }
-
+    use_dhcp = b[EE_OFFS_USE_DHCP];
+    ip_address = EE_U32(b + EE_OFFS_IP);
+    net_mask = EE_U32(b + EE_OFFS_NETMASK);
+    gateway = EE_U32(b + EE_OFFS_GATEWAY);
+    dns1 = EE_U32(b + EE_OFFS_DNS1);
+    dns2 = EE_U32(b + EE_OFFS_DNS2);
+    dmx_address = EE_U16(b + EE_OFFS_DMX_ADDR);
+    dmx_mode = b[EE_OFFS_DMX_MODE];
+    artnet_universe = EE_U16(b + EE_OFFS_ARTNET_UNI);
+    sacn_universe = EE_U16(b + EE_OFFS_SACN_UNI);
+    sacn_transport = b[EE_OFFS_SACN_TRANSPORT];
+    sacn_min_prio = b[EE_OFFS_SACN_MIN_PRIO];
+    lcd_backlight = b[EE_OFFS_LCD_BACKLIGHT];
+    /* Estensioni storiche assenti: fallback SOLO RAM, nessuna riscrittura. */
+    off_timeout_s = b[EE_OFFS_OFF_TIMEOUT_S] <= 30 ? b[EE_OFFS_OFF_TIMEOUT_S] : CFG_DEFAULT_OFF_TIMEOUT_S;
+    proto_priority = b[EE_OFFS_PROTO_PRIORITY] <= 5 ? b[EE_OFFS_PROTO_PRIORITY] : CFG_DEFAULT_PROTO_PRIORITY;
+    active_proto = dmx_mode <= 2 ? dmx_mode : 0;
+    g_netmask_bad = !use_dhcp && net_mask == 0;
     return HAL_OK;
 }
 
-// ---------- Inizializza EEPROM ---------------
+/* Mantiene gap e versione indefinita; salva soltanto parametri legacy.
+   Il formato non è atomico a power-cut: nessun nuovo slot autorizzato. */
+static HAL_StatusTypeDef EE_StoreConfig(bool defaults)
+{
+    uint8_t b[EE_OFFS_PROTO_PRIORITY + 1], verify[sizeof b];
+    HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
+    if (st != HAL_OK) return st;
+    if (!defaults && EE_U16(b) != EE_INIT_VALUE) return HAL_ERROR;
+    EE_Put16(b, EE_INIT_VALUE);
+    b[EE_OFFS_USE_DHCP] = defaults ? CFG_DEFAULT_USE_DHCP : use_dhcp;
+    EE_Put32(b + EE_OFFS_IP, defaults ? CFG_DEFAULT_IP : ip_address);
+    EE_Put32(b + EE_OFFS_NETMASK, defaults ? CFG_DEFAULT_NETMASK : net_mask);
+    EE_Put32(b + EE_OFFS_GATEWAY, defaults ? CFG_DEFAULT_GATEWAY : gateway);
+    EE_Put32(b + EE_OFFS_DNS1, defaults ? CFG_DEFAULT_DNS1 : dns1);
+    EE_Put32(b + EE_OFFS_DNS2, defaults ? CFG_DEFAULT_DNS2 : dns2);
+    EE_Put16(b + EE_OFFS_DMX_ADDR, defaults ? CFG_DEFAULT_DMX_ADDR : dmx_address);
+    b[EE_OFFS_DMX_MODE] = defaults ? CFG_DEFAULT_DMX_MODE : dmx_mode;
+    EE_Put16(b + EE_OFFS_ARTNET_UNI, defaults ? CFG_DEFAULT_ARTNET_UNI : artnet_universe);
+    EE_Put16(b + EE_OFFS_SACN_UNI, defaults ? CFG_DEFAULT_SACN_UNI : sacn_universe);
+    b[EE_OFFS_SACN_TRANSPORT] = defaults ? CFG_DEFAULT_SACN_TRANSPORT : sacn_transport;
+    b[EE_OFFS_SACN_MIN_PRIO] = defaults ? CFG_DEFAULT_SACN_MIN_PRIO : sacn_min_prio;
+    b[EE_OFFS_LCD_BACKLIGHT] = defaults ? CFG_DEFAULT_LCD_BL : lcd_backlight;
+    b[EE_OFFS_OFF_TIMEOUT_S] = defaults ? CFG_DEFAULT_OFF_TIMEOUT_S : off_timeout_s;
+    b[EE_OFFS_PROTO_PRIORITY] = defaults ? CFG_DEFAULT_PROTO_PRIORITY : proto_priority;
+    /* Non riscrive i byte riservati 0x02 e 0x1B. */
+    for (unsigned i = 0; i < sizeof b; ++i)
+    {
+        if (i == EE_OFFS_VERSION || i == 0x1B) continue;
+        uint8_t old;
+        st = EE_Read(i, &old, 1);
+        if (st != HAL_OK) return st;
+        if (old == b[i]) continue;
+        st = EE_Write(i, b + i, 1);
+        if (st != HAL_OK) return st;
+    }
+    st = EE_Read(0, verify, sizeof verify);
+    if (st != HAL_OK) return st;
+    return memcmp(b, verify, sizeof b) == 0 ? HAL_OK : HAL_ERROR;
+}
 
+/* Solo factory reset esplicito: nessun richiamo automatico dal load. */
 HAL_StatusTypeDef EE_InitMemory(void)
 {
-    // Cancella il valore di init
-    EE_WriteU16(EE_OFFS_INIT, 0x0000);
-
-    // Network
-    EE_Write(EE_OFFS_USE_DHCP, (uint8_t[]){1}, 1);
-    EE_WriteU32(EE_OFFS_IP, 0);
-    EE_WriteU32(EE_OFFS_NETMASK, 0);
-    EE_WriteU32(EE_OFFS_GATEWAY, 0);
-    EE_WriteU32(EE_OFFS_DNS1, 0);
-    EE_WriteU32(EE_OFFS_DNS2, 0);
-
-    // DMX
-    EE_WriteU16(EE_OFFS_DMX_ADDR, 1);
-    EE_Write(EE_OFFS_DMX_MODE, (uint8_t[]){2}, 1); // 0=DMX, 1=ArtNet, 2=sACN, 3=Auto
-
-    // Art-Net
-    EE_WriteU16(EE_OFFS_ARTNET_UNI, 0);
-
-    // sACN
-    EE_WriteU16(EE_OFFS_SACN_UNI, 1);
-    EE_Write(EE_OFFS_SACN_TRANSPORT, (uint8_t[]){0}, 1); // 0=multicast
-    EE_Write(EE_OFFS_SACN_MIN_PRIO,  (uint8_t[]){0}, 1);
-
-    // System (v1.3.1+)
-    EE_WriteU8(EE_OFFS_LCD_BACKLIGHT,   CFG_DEFAULT_LCD_BL);
-    EE_WriteU8(EE_OFFS_OFF_TIMEOUT_S,   CFG_DEFAULT_OFF_TIMEOUT_S);
-    EE_WriteU8(EE_OFFS_PROTO_PRIORITY,  CFG_DEFAULT_PROTO_PRIORITY);
-
-    // Init value
-    EE_WriteU16(EE_OFFS_INIT, EE_INIT_VALUE);
-
-    return HAL_OK;
+    return EE_StoreConfig(true);
 }
-
-
-// Salva la configurazione corrente (globali --> EEPROM)
 
 HAL_StatusTypeDef EE_SaveConfig(void)
 {
-    EE_WriteU8 (EE_OFFS_USE_DHCP, use_dhcp);
-    EE_WriteU32(EE_OFFS_IP,       ip_address);
-    EE_WriteU32(EE_OFFS_NETMASK,  net_mask);
-    EE_WriteU32(EE_OFFS_GATEWAY,  gateway);
-    EE_WriteU32(EE_OFFS_DNS1,     dns1);
-    EE_WriteU32(EE_OFFS_DNS2,     dns2);
-
-    EE_WriteU16(EE_OFFS_DMX_ADDR, dmx_address);
-    EE_WriteU8 (EE_OFFS_DMX_MODE, dmx_mode);
-
-    EE_WriteU16(EE_OFFS_ARTNET_UNI, artnet_universe);
-    EE_WriteU16(EE_OFFS_SACN_UNI,   sacn_universe);
-    EE_WriteU8 (EE_OFFS_SACN_TRANSPORT, sacn_transport);
-    EE_WriteU8 (EE_OFFS_SACN_MIN_PRIO,  sacn_min_prio);
-
-    EE_WriteU8 (EE_OFFS_LCD_BACKLIGHT, lcd_backlight);
-
-    // System (v1.3.1+)
-    EE_WriteU8 (EE_OFFS_OFF_TIMEOUT_S,  off_timeout_s);
-    EE_WriteU8 (EE_OFFS_PROTO_PRIORITY, proto_priority);
-
-    return HAL_OK;
+    if (use_dhcp > 1 || dmx_address < 1 || dmx_address > 512 || dmx_mode > 3 ||
+        artnet_universe > 32767 || sacn_universe < 1 || sacn_universe > 63999 ||
+        sacn_transport > 1 || sacn_min_prio > 200 || off_timeout_s > 30 || proto_priority > 5) return HAL_ERROR;
+    return EE_StoreConfig(false);
 }
 
 void EE_BusScan(void)
