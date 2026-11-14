@@ -20,6 +20,7 @@
 #include "defs.h"
 #include "relay_driver.h"
 #include "dmx_512.h"
+#include "rdm.h"
 #include "user_interface.h"
 #include "rtc_i2c.h"
 #include "nfc_i2c.h"

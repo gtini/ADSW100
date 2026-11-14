@@ -29,7 +29,7 @@ typedef uint8_t u8_t;
 typedef int err_t;
 typedef struct { uint32_t addr; } ip_addr_t;
 typedef ip_addr_t ip4_addr_t;
-struct netif { uint8_t hwaddr_len, hwaddr[6]; ip_addr_t ip; };
+struct netif { uint8_t hwaddr_len, hwaddr[6]; ip_addr_t ip,mask; };
 struct udp_pcb { int dummy; };
 struct pbuf { uint16_t len, tot_len; void *payload; };
 static struct netif interface;
@@ -52,6 +52,9 @@ static uint32_t HAL_GetTick(void) { return tick; }
 #define ip4_addr4(a) (((a)->addr >> 24) & 255)
 #define IP4_ADDR(a,b,c,d,e) ((a)->addr = (uint32_t)(uint8_t)(b) | (uint32_t)(uint8_t)(c)<<8 | (uint32_t)(uint8_t)(d)<<16 | (uint32_t)(uint8_t)(e)<<24)
 #define lwip_ntohl(a) __builtin_bswap32(a)
+#define lwip_htonl(a) __builtin_bswap32(a)
+#define dhcp_supplied_address(n) (0)
+#define netif_ip4_netmask(n) (&(n)->mask)
 static char *ip4addr_ntoa_r(const ip4_addr_t *a, char *s, int n) { snprintf(s,n,"%u.%u.%u.%u",ip4_addr1(a),ip4_addr2(a),ip4_addr3(a),ip4_addr4(a)); return s; }
 static char *ipaddr_ntoa(const ip_addr_t *a) { (void)a; return "mock"; }
 static struct udp_pcb pcb;
@@ -68,7 +71,7 @@ static unsigned pbuf_copy_partial(struct pbuf *p, void *out, unsigned n, unsigne
 static int igmp_joingroup_netif(struct netif *n,const ip4_addr_t *g) { (void)n;(void)g;return 0; }
 static int igmp_leavegroup_netif(struct netif *n,const ip4_addr_t *g) { (void)n;(void)g;return 0; }
 typedef struct { unsigned dummy; } GPIO_TypeDef;
-typedef struct { uint32_t ISR,RDR,CR1,CR3; } UART_Registers;
+typedef struct { uint32_t ISR,RDR,CR1,CR3,TDR,RQR; } UART_Registers;
 typedef struct { UART_Registers *Instance; unsigned RxState,ReceptionType,ErrorCode;void *RxISR; } UART_HandleTypeDef;
 #define USART_ISR_FE 1u
 #define USART_ISR_NE 2u
@@ -101,8 +104,8 @@ static void HAL_Delay(unsigned n) {(void)n;}
 static HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *h,unsigned a,unsigned t,unsigned ms) {(void)h;(void)a;(void)t;(void)ms;return io_fail()?HAL_ERROR:HAL_OK;}
 static HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_read || io_fail())return HAL_ERROR;memcpy(b,memory+m,n);return HAL_OK;}
 static HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *h,unsigned a,unsigned m,unsigned sz,uint8_t *b,unsigned n,unsigned ms) {(void)h;(void)a;(void)sz;(void)ms;if(fail_write || io_fail())return HAL_ERROR;assert(m+n<=128);memcpy(memory+m,b,n);writes++;return HAL_OK;}
-static uint32_t uid[3]={1,2,3};
-#define UID_BASE ((uintptr_t)uid)
+static uint32_t hardware_uid[3]={1,2,3};
+#define UID_BASE ((uintptr_t)hardware_uid)
 typedef enum {GPIO_PIN_RESET,GPIO_PIN_SET} GPIO_PinState;
 static GPIO_TypeDef gpio;
 static uint16_t coils;
@@ -133,7 +136,68 @@ uint16_t artnet_universe;
 uint16_t sacn_universe=1;
 uint8_t sacn_transport,sacn_min_prio;
 #endif
+#include "cfg_io.h"
+#include "rdm.h"
 static void NET_ScheduleApply(void) {}
+static void LCD_Backlight_Wake(void) {}
+#if !defined(EE_TEST) && !defined(BRAND_EE_TEST) && !defined(UI_TEST) && !defined(CDC_TEST) && !defined(NODE_RDM_TEST)
+uint8_t dmx_port_mode;
+#endif
+/* Registri/tempo simulati per il proprietario USART/TIM7. */
+static uint32_t SystemCoreClock=480000000;
+static struct {uint32_t CTRL,CYCCNT;} dwt_registers;
+#define DWT (&dwt_registers)
+static struct {uint32_t DEMCR;} debug_registers;
+#define CoreDebug (&debug_registers)
+#define CoreDebug_DEMCR_TRCENA_Msk 1u
+#define DWT_CTRL_CYCCNTENA_Msk 1u
+static struct {uint32_t CR1,ARR,CNT,EGR,SR,DIER,PSC;} tim7_registers;
+#define TIM7 (&tim7_registers)
+#define TIM7_IRQn 55
+#define TIM_EGR_UG 1u
+#define TIM_DIER_UIE 1u
+#define TIM_CR1_URS 4u
+#define TIM_SR_UIF 1u
+#define __DSB() ((void)0)
+#define TIM_CR1_OPM 8u
+#define TIM_CR1_CEN 1u
+#define USART_CR1_RE 16u
+#define USART_ISR_TXE_TXFNF 32u
+#define USART_ISR_TC 16u
+#define USART_CR1_TXEIE_TXFNFIE 32u
+#define USART_CR1_TCIE 64u
+#define UART_CLEAR_TCF 16u
+#define USART_RQR_RXFRQ 1u
+#define GPIO_MODE_OUTPUT_PP 1u
+#define GPIO_MODE_AF_PP 2u
+#define GPIO_SPEED_FREQ_HIGH 3u
+#define GPIO_AF4_USART1 4u
+#define SET_BIT(r,b) ((r)|=(b))
+#define CLEAR_BIT(r,b) ((r)&=~(b))
+#define RDM_DIR_GPIO_Port (&gpio)
+#define RDM_DIR_Pin 32768u
+#define RDM_TXD_GPIO_Port (&gpio)
+#define RDM_TXD_Pin 16384u
+#define RDM_RXD_GPIO_Port (&gpio)
+#define RDM_RXD_Pin 8192u
+#define LCD_BL_GPIO_Port (&gpio)
+#define LCD_BL_Pin 4096u
+typedef struct {uint32_t Pin,Mode,Speed,Alternate;} GPIO_InitTypeDef;
+static bool line_high=true;
+static GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p,uint16_t pin) {(void)p;(void)pin;return line_high?GPIO_PIN_SET:GPIO_PIN_RESET;}
+static void HAL_GPIO_Init(GPIO_TypeDef *p,GPIO_InitTypeDef *pin) {(void)p;(void)pin;}
+#define __HAL_RCC_TIM7_CLK_ENABLE() ((void)0)
+static uint32_t HAL_RCC_GetPCLK1Freq(void) {return 120000000;}
+static void HAL_NVIC_SetPriority(int irq,int a,int b) {(void)irq;(void)a;(void)b;}
+static unsigned timer_pending_clears;
+static void HAL_NVIC_ClearPendingIRQ(int irq) {(void)irq;++timer_pending_clears;}
+static void HAL_NVIC_EnableIRQ(int irq) {(void)irq;}
+#ifdef DMX_TEST
+static void RdmTestReceive(const uint8_t *q,uint16_t n,uint32_t end) {(void)q;(void)n;(void)end;}
+#define RDM_Receive RdmTestReceive
+uint16_t ArtNet_GetSlotsView(uint16_t u,const uint8_t **p) {(void)u;*p=NULL;return 0;}
+uint16_t sACN_GetSlotsView(uint16_t u,const uint8_t **p) {(void)u;*p=NULL;return 0;}
+#endif
 #endif
 '''
 ART = r'''
@@ -249,7 +313,7 @@ int main(void) {
 
 BRAND_EE = r"""
 static void expect_preserved(const uint8_t *original) {
- for(unsigned i=0;i<128;i++) if(i!=EE_OFFS_VERSION && i!=EE_OFFS_BRAND && i!=EE_OFFS_MENU_CODE) assert(memory[i]==original[i]);
+ for(unsigned i=0;i<128;i++) if(i!=EE_OFFS_VERSION && i!=EE_OFFS_BRAND && i!=EE_OFFS_MENU_CODE && i!=EE_OFFS_DMX_PORT_MODE) assert(memory[i]==original[i]);
 }
 int main(void) {
  uint8_t legacy[256];
@@ -317,7 +381,7 @@ int main(void) {
   if(raw==EE_MENU_CODE_TAG || raw==(EE_MENU_CODE_TAG|1)) continue;
   memory[EE_OFFS_MENU_CODE]=raw;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
  }
- memory[EE_OFFS_MENU_CODE]=EE_MENU_CODE_TAG;memory[2]=3;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
+ memory[EE_OFFS_MENU_CODE]=EE_MENU_CODE_TAG;memory[2]=4;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
  memcpy(memory,legacy,256);memory[0]=0;assert(EE_LoadConfig()==HAL_ERROR && writes==n);
  return 0;
 }
@@ -340,6 +404,17 @@ int main(void) {
  dmx_address=100;assert(EE_SaveConfig()==HAL_OK);
  assert(EE_ResetUserMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
  assert(brand==BRAND_VIDELIO && menu_code_required==1 && dmx_address==1);
+ /* Menu DMX: candidato, annullamento, persistenza e universi condivisi. */
+ s_dmx_sel=1;g_ui.editing=false;g_ui.state=UI_PAGE_DMX;
+ handle_page_dmx_event(EVT_BTN_SHORT);handle_page_dmx_event(EVT_ENC_RIGHT);assert(dmx_port_mode==0);
+ handle_page_dmx_event(EVT_BTN_LONG);assert(dmx_port_mode==0);
+ handle_page_dmx_event(EVT_BTN_SHORT);handle_page_dmx_event(EVT_ENC_RIGHT);handle_page_dmx_event(EVT_BTN_SHORT);
+ assert(dmx_port_mode==1 && EE_LoadConfig()==HAL_OK && dmx_port_mode==1);
+ s_dmx_sel=2;handle_page_dmx_event(EVT_BTN_SHORT);for(unsigned i=0;i<3;i++)handle_page_dmx_event(EVT_ENC_RIGHT);handle_page_dmx_event(EVT_BTN_SHORT);
+ assert(artnet_universe==3 && sacn_universe==1);
+ s_dmx_sel=1;handle_page_dmx_event(EVT_BTN_SHORT);handle_page_dmx_event(EVT_ENC_RIGHT);handle_page_dmx_event(EVT_BTN_SHORT);
+ assert(dmx_port_mode==2);s_dmx_sel=2;handle_page_dmx_event(EVT_BTN_SHORT);handle_page_dmx_event(EVT_ENC_RIGHT);handle_page_dmx_event(EVT_BTN_SHORT);
+ assert(sacn_universe==2 && artnet_universe==3 && EE_LoadConfig()==HAL_OK && dmx_port_mode==2);
  return 0;
 }
 """
@@ -350,13 +425,15 @@ def ui_functions():
     text = r"""
 #include "user_interface.h"
 static struct { ui_state_t state;bool editing,force_redraw;uint8_t sel; } g_ui;
-static uint8_t s_unlock_pos,s_unlock_digits[4],s_sys_sel;
+static uint8_t s_unlock_pos,s_unlock_digits[4],s_sys_sel,s_dmx_sel;
+static uint32_t s_dmx_edit_value;
 static void LCD_DrawToast(const char *s) {(void)s;}
 static void LCD_EditMarker(uint8_t r,bool e) {(void)r;(void)e;}
 static void HardFactoryReset(bool preserve) {assert(preserve);}
 """
     for signature in ['static void UI_RequestMenu(void)', 'static void handle_page_unlock_event(ui_event_t ev)',
-                      'static void handle_page_sys_event(ui_event_t ev)']:
+                      'static void handle_page_sys_event(ui_event_t ev)', 'static cfg_parameter_t UI_DmxParameter(void)',
+                      'static void handle_page_dmx_event(ui_event_t ev)']:
         start = source.index(signature)
         end = source.index('{', start)
         depth = 1
@@ -379,6 +456,7 @@ static USBD_CDC_HandleTypeDef cdc;
 USBD_HandleTypeDef hUsbDeviceFS={USBD_STATE_CONFIGURED,&cdc};
 static char sent[256];
 static unsigned tx_calls;
+void RDM_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"rdm=1 uid=17FA:A3010203 rx=0 late=0\r\n");}
 static uint8_t CDC_Transmit_FS(uint8_t *b,uint16_t n) {
  if(cdc.TxState)return USBD_BUSY;
  assert(n<sizeof sent);memcpy(sent,b,n);sent[n]=0;cdc.TxState=1;tx_calls++;return USBD_OK;
@@ -415,6 +493,7 @@ int main(void) {
  tick=30000;USB_Debug_OnRxBytes((const uint8_t *)"1\n",2);before=writes;USB_ServiceTask();USB_ServiceTask();assert(strcmp(sent,"LOCKED\r\n")==0 && writes==before);cdc.TxState=0;
  command("brand=2\n","LOCKED\r\n");command("menu_code=1\n","LOCKED\r\n");
  command("brand?\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
+ command("rdm?\n","rdm=1 uid=17FA:A3010203 rx=0 late=0\r\n");
  hUsbDeviceFS.dev_state=0;USB_ServiceTask();hUsbDeviceFS.dev_state=USBD_STATE_CONFIGURED;
  tick=1;command("brand=1\n","LOCKED\r\n"); /* Simula wrap: finestra non riaperta. */
  /* BUSY non perde la risposta e non permette a log di scavalcarla. */
@@ -425,13 +504,137 @@ int main(void) {
 }
 """
 
+NODE_RDM = r"""
+struct netif gnetif;
+static uint8_t art_levels[512],sac_levels[512];
+static bool art_valid=true,sac_valid=true;
+uint16_t ArtNet_GetSlotsView(uint16_t universe,const uint8_t **p) {(void)universe;*p=art_valid?art_levels:NULL;return art_valid?512:0;}
+uint16_t sACN_GetSlotsView(uint16_t universe,const uint8_t **p) {(void)universe;*p=sac_valid?sac_levels:NULL;return sac_valid?512:0;}
+static UART_Registers registers;
+static UART_HandleTypeDef uart={.Instance=&registers};
+static uint64_t time_us;
+static void advance_us(unsigned us) {time_us+=us;DWT->CYCCNT=(uint32_t)(time_us*480u);tick=(uint32_t)(time_us/1000);}
+static void timer(void) {unsigned period=TIM7->ARR+1;advance_us(period);TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();}
+static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);}
+static void finish_tx(void) {
+ unsigned guard=0;
+ while(tx_state && tx_state!=3 && ++guard<10) timer();assert(tx_state==3);
+ while(tx_state==3) {registers.ISR=USART_ISR_TXE_TXFNF;DMX512UARTInterrupt(&uart);advance_us(44);}
+ assert(tx_state==4);receive(USART_ISR_TC,0);assert(tx_state==0 && !(coils&RDM_DIR_Pin));
+}
+static uint8_t request[257];
+static unsigned build(unsigned pid,unsigned cc,const uint8_t *payload,unsigned count,bool broadcast) {
+ memset(request,0,sizeof request);request[0]=0xCC;request[1]=1;request[2]=24+count;
+ if(broadcast)memset(request+3,255,6);else memcpy(request+3,uid,6);
+ request[9]=0x17;request[10]=0xFA;request[14]=1;request[15]=7;request[16]=1;
+ request[20]=cc;PutWord(request+21,pid);request[23]=count;if(count)memcpy(request+24,payload,count);
+ uint16_t sum=0;for(unsigned i=0;i<request[2];i++)sum+=request[i];PutWord(request+request[2],sum);return request[2]+2;
+}
+static void transact(unsigned pid,unsigned cc,const uint8_t *payload,unsigned count) {
+ unsigned n=build(pid,cc,payload,count,false);RDM_Receive(request,n,DMX512_Cycles());assert(tx_state);finish_tx();assert(RDM_PacketValid(tx_data,tx_count));
+}
+int main(void) {
+ memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ uint8_t eui[]={0,4,0xA3,1,2,3};memcpy(memory+0xFA,eui,6);RDM_Init();assert(RDM_Enabled());
+ assert(uid[0]==0x17 && uid[1]==0xFA && uid[2]==0xA3 && uid[5]==3);
+ InitDMX512(&uart);
+ /* Richiesta NVIC spuria: non può anticipare turnaround/BREAK/MAB. */
+ uint8_t probe[2]={0xFE,0xAA};assert(DMX512_SendPacket(probe,2,true,DMX512_Cycles()));
+ assert((TIM7->CR1&TIM_CR1_URS) && timer_pending_clears);
+ TIM7_IRQHandler();assert(tx_state==5 && TIM7->ARR==199);
+ timer();assert(tx_state==3);
+ receive(USART_ISR_FE|USART_ISR_NE|USART_ISR_ORE,0);
+ assert(!(registers.ISR&(USART_ISR_FE|USART_ISR_NE|USART_ISR_ORE)) && tx_state==3);
+ finish_tx();assert(!TIM7->DIER && !(TIM7->CR1&TIM_CR1_CEN));
+ TIM7->SR=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state);TIM7->SR=0;
+ for(unsigned b=0;b<3;b++){brand=b;transact(0x0081,0x20,NULL,0);assert(tx_data[23]==strlen(Brand_Current()->manufacturer) && !memcmp(tx_data+24,Brand_Current()->manufacturer,tx_data[23]));transact(0x0080,0x20,NULL,0);assert(!memcmp(tx_data+24,Brand_Current()->model,tx_data[23]));}brand=0;
+ transact(0x0060,0x20,NULL,0);assert(tx_data[16]==0 && tx_data[23]==19 && Word(tx_data+26)==ADSW_RDM_MODEL_ID && Word(tx_data+34)==12);
+ transact(0x0081,0x20,NULL,0);assert(tx_data[23]==strlen(Brand_Current()->manufacturer));
+ uint8_t address[]={1,0xF0};transact(0x00F0,0x30,address,2);assert(dmx_address==496 && tx_data[16]==0);
+ transact(0x00F0,0x20,NULL,0);assert(Word(tx_data+24)==496);
+ address[0]=address[1]=0;transact(0x00F0,0x30,address,2);assert(tx_data[16]==2 && Word(tx_data+24)==6 && dmx_address==496);
+ transact(0xFFFF,0x20,NULL,0);assert(tx_data[16]==2 && Word(tx_data+24)==0);
+ transact(0x0060,0x30,NULL,0);assert(tx_data[16]==2 && Word(tx_data+24)==5);
+ uint8_t identify_on=1;transact(0x1000,0x30,&identify_on,1);assert(identify);identify_on=0;transact(0x1000,0x30,&identify_on,1);assert(!identify);
+ uint8_t label[]={'N','o','d','e'};transact(0x0082,0x30,label,4);transact(0x0082,0x20,NULL,0);assert(tx_data[23]==4 && memcmp(tx_data+24,label,4)==0);
+ uint8_t range[12]={0};memset(range+6,255,6);unsigned n=build(1,0x10,range,12,true);
+ RDM_Receive(request,n,DMX512_Cycles());assert(tx_state==5);finish_tx();assert(tx_count==24 && tx_data[7]==0xAA);
+ n=build(2,0x10,NULL,0,false);RDM_Receive(request,n,DMX512_Cycles());finish_tx();assert(muted);
+ n=build(1,0x10,range,12,true);RDM_Receive(request,n,DMX512_Cycles());assert(!tx_state);
+ n=build(3,0x10,NULL,0,true);RDM_Receive(request,n,DMX512_Cycles());assert(!muted && !tx_state);
+ for(unsigned pid=PID_DMX_PORT_MODE;pid<=PID_RELAY_OFF_TIME;pid++) {
+  uint8_t p[2];PutWord(p,pid);transact(0x0051,0x20,p,2);assert(tx_data[16]==0 && Word(tx_data+24)==pid);
+  transact(pid,0x20,NULL,0);assert(tx_data[16]==0);
+  uint8_t value[2];unsigned size=tx_data[23];memcpy(value,tx_data+24,size);
+  transact(pid,0x30,value,size);assert(tx_data[16]==0);
+  memset(value,255,size);transact(pid,0x30,value,size);assert(tx_data[16]==2 && Word(tx_data+24)==6);
+
+ }
+ /* PDL errata, richiesta tardiva, sub-device e broadcast: nessuna modifica indebita. */
+ unsigned bad=build(0x00F0,0x30,NULL,0,false);RDM_Receive(request,bad,DMX512_Cycles());finish_tx();assert(tx_data[16]==2 && Word(tx_data+24)==1);
+ bad=build(0x00F0,0x30,address,2,false);uint32_t ended=DMX512_Cycles();advance_us(2001);RDM_Receive(request,bad,ended);assert(!tx_state && dmx_address==496);
+ bad=build(0x0060,0x20,NULL,0,false);request[19]=1;PutWord(request+24,0);uint16_t sum=0;for(unsigned i=0;i<24;i++)sum+=request[i];PutWord(request+24,sum);
+ RDM_Receive(request,bad,DMX512_Cycles());finish_tx();assert(tx_data[16]==2 && Word(tx_data+24)==9);
+ bad=build(0x0060,0x20,NULL,0,true);RDM_Receive(request,bad,DMX512_Cycles());assert(!tx_state);
+ transact(0x0709,0x20,NULL,0);assert(tx_data[16]==2 && Word(tx_data+24)==5);
+ uint8_t invalid=3;transact(PID_DMX_PORT_MODE,0x30,&invalid,1);assert(tx_data[16]==2 && dmx_port_mode==0);
+ uint8_t net[9]={0,0,0,1,192,168,4,20,24};uint32_t old_ip=ip_address;transact(0x0706,0x30,net,9);assert(tx_data[16]==0 && ip_address==old_ip);
+ transact(0x0706,0x20,net,4);assert(memcmp(tx_data+28,net+4,5)==0 && ip_address==old_ip);
+ transact(0x0709,0x30,net,4);assert(tx_data[16]==0 && (ip_address&255)==192 && net_mask==0x00FFFFFF);
+ transact(0x0700,0x20,NULL,0);assert(Word(tx_data+28)==1);
+ transact(0x0705,0x20,net,4);assert(tx_data[23]==10 && tx_data[33]==0);
+ uint8_t dhcp_off[5]={0,0,0,1,0};assert(use_dhcp==1);transact(0x0703,0x30,dhcp_off,5);assert(use_dhcp==1);
+ transact(0x0703,0x20,dhcp_off,4);assert(tx_data[28]==0);
+ transact(0x0709,0x30,dhcp_off,4);assert(use_dhcp==0);
+ uint32_t before_ip=ip_address;net[8]=33;transact(0x0706,0x30,net,9);assert(tx_data[16]==2 && ip_address==before_ip);
+ uint8_t dns[5]={0,8,8,4,4};transact(0x070B,0x30,dns,5);transact(0x070B,0x20,dns,1);assert(tx_data[16]==0 && memcmp(tx_data+24,dns,5)==0);
+ uint8_t role=1;transact(PID_DMX_PORT_MODE,0x30,&role,1);assert(dmx_port_mode==1);DMX512_Service();assert(applied_port==1);
+ dmx_address=1;InitRelay();art_levels[0]=201;art_levels[511]=99;advance_us(2100000);DMX512_Service();timer();assert(tx_state==1 && (coils&RDM_DIR_Pin));
+ RelayTask();assert(active_proto==1 && (relay_target_mask&1));
+ finish_tx();assert(tx_data[0]==0 && tx_data[1]==201 && tx_data[512]==99 && tx_count==513);
+ art_valid=false;DMX512_Service();advance_us(30000);timer();finish_tx();assert(tx_data[1]==0 && tx_data[512]==0);
+ assert(CFG_SetValue(CFG_DMX_PORT_MODE,2));DMX512_Service();sac_levels[0]=45;advance_us(2100000);DMX512_Service();timer();finish_tx();assert(tx_data[1]==45);RelayTask();assert(active_proto==2 && !(relay_target_mask&1));
+ /* Main fermo: scaduta la cache, TX continua ma soltanto con zeri. */
+ advance_us(100000);timer();finish_tx();assert(tx_data[1]==0);
+ /* Messaggio RDM completo ricevuto nella finestra Node: stesso proprietario UART. */
+ n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);}
+ assert(rdm_ready);DMX512_Service();assert(tx_state);finish_tx();assert(tx_data[0]==0xCC && controller_seen);
+ timer();assert(tx_state==0); /* Controller presente: niente contesa TX autonoma. */
+ /* RX di un checksum errato non produce risposta. */
+ n=build(0x0060,0x20,NULL,0,false);request[n-1]^=1;receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);}
+ DMX512_Service();assert(!tx_state);
+ /* Ritorno IN senza reset; dati completi, nessun echo del proprio TX. */
+ assert(CFG_SetValue(CFG_DMX_PORT_MODE,0));DMX512_Service();assert(applied_port==0 && !(coils&RDM_DIR_Pin));
+ receive(USART_ISR_FE,0);receive(8,0);receive(8,222);receive(8,12);receive(USART_ISR_FE,0);DMX512_Service();assert(dmxRxCount==2 && dmxRxBuffer[0]==222 && dmxRxBuffer[2]==0);
+ advance_us(300000);RDM_Task();assert(!RDM_SavePending());assert(EE_LoadConfig()==HAL_OK && dmx_address==1);
+ /* Migrazione v2 -> v3: ignora il precedente byte 0x27, conserva identità e dmx_mode. */
+ dmx_mode=3;assert(EE_SaveConfig()==HAL_OK);uint8_t saved[256];memcpy(saved,memory,256);saved[2]=2;saved[0x27]=0xB2;
+ for(int cut=0;cut<30;cut++) {
+  memcpy(memory,saved,256);fail_at=cut;io_count=0;(void)EE_LoadConfig();unsigned ops=io_count;fail_at=-1;
+  assert(EE_LoadConfig()==HAL_OK && dmx_port_mode==0 && dmx_mode==3);
+  for(unsigned i=0;i<128;i++)if(i!=2 && i!=0x27)assert(memory[i]==saved[i]);
+  unsigned count=writes;assert(EE_LoadConfig()==HAL_OK && writes==count);if(ops<=(unsigned)cut)break;
+ }
+ assert(CFG_SetValue(CFG_DMX_PORT_MODE,2));assert(EE_SaveConfig()==HAL_OK);dmx_port_mode=0;assert(EE_LoadConfig()==HAL_OK && dmx_port_mode==2);
+ memory[0x27]=0xB3;assert(EE_LoadConfig()==HAL_ERROR);memory[0x27]=0xB0;
+ /* TX guasto non lascia il driver abilitato senza limite. */
+ dmx_port_mode=1;DMX512_Service();advance_us(2100000);DMX512_Service();timer();timer();timer();assert(tx_state==3);
+ timer();assert(tx_state==0 && !(coils&RDM_DIR_Pin) && tx_faults);
+ /* Un EUI non nel dominio noto disabilita soltanto RDM, mai UID di fallback. */
+ char diagnostic[64];RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=1 uid=17FA:A3010203") && late_requests==1);
+ memory[0xFA]=0xFF;RDM_Init();assert(!RDM_Enabled());RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=0 uid=0000:00000000 rx=0 late=0"));return 0;
+}
+"""
+
 def run():
     with tempfile.TemporaryDirectory(prefix='adsw100-tests-') as folder:
         tmp = Path(folder)
         (tmp / 'h_files.h').write_text(COMMON)
         for name in ['stm32h7xx_hal.h', 'main.h', 'ethernetif.h', 'usb_device.h', 'usbd_cdc_if.h', 'usbd_cdc.h']:
             (tmp / name).write_text('')
-        for name in ['udp.h', 'pbuf.h', 'netif.h', 'ip4_addr.h', 'ip_addr.h', 'igmp.h']:
+        for name in ['udp.h', 'pbuf.h', 'netif.h', 'ip4_addr.h', 'ip_addr.h', 'igmp.h', 'dhcp.h']:
             (tmp / 'lwip').mkdir(exist_ok=True)
             (tmp / 'lwip' / name).write_text('')
         gpio = []
@@ -444,11 +647,13 @@ def run():
         cases = [('ART_TEST', 'artnet.c', ART), ('SAC_TEST', 'sacn.c', SAC),
                  ('RELAY_TEST', 'relay_driver.c', RELAY), ('CFG_TEST', 'cfg_io.c', CFG),
                  ('DMX_TEST', 'dmx_512.c', DMX), ('EE_TEST', 'eeprom.c', EE),
-                 ('BRAND_EE_TEST', 'eeprom.c', BRAND_EE), ('UI_TEST', 'eeprom.c', UI), ('CDC_TEST', 'usb_debug.c', CDC)]
+                 ('BRAND_EE_TEST', 'eeprom.c', BRAND_EE), ('UI_TEST', 'eeprom.c', UI), ('CDC_TEST', 'usb_debug.c', CDC), ('NODE_RDM_TEST', 'dmx_512.c', NODE_RDM)]
         for define, filename, body in cases:
             harness = tmp / 'test.c'
-            identity = f'#include "{ROOT / "Core/Src/cfg_io.c"}"\n' if filename in ('artnet.c', 'eeprom.c', 'usb_debug.c') else ''
+            identity = f'#include "{ROOT / "Core/Src/cfg_io.c"}"\n' if filename in ('artnet.c', 'eeprom.c', 'usb_debug.c') or define == 'NODE_RDM_TEST' else ''
             ui = ui_functions() if define == 'UI_TEST' else ''
+            if define == 'NODE_RDM_TEST':
+                identity += f'#include "{ROOT / "Core/Src/eeprom.c"}"\n#include "{ROOT / "Core/Src/rdm.c"}"\n#include "{ROOT / "Core/Src/relay_driver.c"}"\n'
             if define == 'CDC_TEST':
                 identity += f'#include "{ROOT / "Core/Src/eeprom.c"}"\n' + CDC_MOCK
             harness.write_text(f'#define {define}\n#include "h_files.h"\n' + identity + f'#include "{ROOT / "Core/Src" / filename}"\n' + ui + body)

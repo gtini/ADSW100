@@ -702,6 +702,7 @@ int main(void)
 
   // Post-LwIP (callback, DNS, ecc.)
   Network_InitAfterLwip();
+  RDM_Init();
 
   ETH_PrintMemMap(); // invia per debug descrittori e RX pool
 
@@ -720,11 +721,12 @@ int main(void)
 
   while (1)
   {
+      DMX512_Service();
+      RDM_Task();
       USB_ServiceTask();
 	  if (timer_1ms_flag)
 	  {
 		  timer_1ms_flag = false;
-		  DMX512_Service();
 		  task_1ms();
 	  }
 

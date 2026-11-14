@@ -50,6 +50,11 @@ extern volatile _DMX_FLAGS dmxFlags;
 void DMX512_Service(void);
 void InitDMX512(UART_HandleTypeDef *huart);
 void DMX512UARTInterrupt(UART_HandleTypeDef *huart);
+/* Main: acquisisce il TX condiviso senza attese, 1..513 byte; timestamp DWT fine richiesta. */
+bool DMX512_SendPacket(const uint8_t *data, uint16_t count, bool discovery, uint32_t request_end);
+bool DMX512_TxBusy(void);
+uint32_t DMX512_Cycles(void);
+void DMX512_ObserveController(void);
 
 #ifdef __cplusplus
 }

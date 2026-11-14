@@ -1,6 +1,118 @@
 # Audit ADSW100 prima della v2.0.0
 
-Data: 14 novembre 2026. Audit statico, senza modifica o esecuzione del firmware. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nessuna compilazione o misura hardware eseguita. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
+Data: 14 novembre 2026. Audit iniziale statico, seguito dagli incrementi e test documentati sotto. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nella prima analisi non erano state eseguite compilazioni o misure hardware. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
+
+## Incremento corrente — RDM e DMX Node (14 novembre 2026)
+
+Questa sezione aggiorna le evidenze storiche riportate sotto. Branding/EEPROM precedenti collaudati dall’utente e congelati in `1e71467`. Incremento corrente compilato e verificato con simulazione host; non programmato né misurato su hardware dall’agente. Nessun commit/tag effettuato.
+
+### Correzione successiva al primo collaudo RDM/Node
+
+L’utente segnala DMX IN funzionante, mancata discovery da URC01 e reset ripetuti entrando in ArtNet Node. Il log conferma EUI-48 fisico `FC:0F:E7:16:45:70`: l’OUI è già ammesso e l’UID previsto è `17FA:E7164570`. Il log fornito non contiene Reset flags: **non è ancora confermato** se il riavvio sia IWDG, HardFault o altra causa.
+
+Difetti confermati nel codice precedente, corretti in `dmx_512.c`:
+
+- **Alto, TimerArm/TIM7_IRQHandler:** il riarmo scriveva EGR.UG con URS=0 e UIE rimasto abilitato dal periodo precedente. UG può richiedere un interrupt software; azzerare SR dopo UG non garantisce la cancellazione di una richiesta già pendente nel NVIC. Inoltre l’handler avanzava la macchina TX senza verificare UIF/UIE. Possibili scadenze anticipate, risposta discovery interrotta e catena di IRQ che affama il main. La documentazione ST inclusa in `Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_ll_tim.h` (LL_TIM_SetUpdateSource) distingue esplicitamente UG/overflow con URS=0 da solo overflow con URS=1. Ora TimerStop/TimerArm mascherano UIE, usano URS, cancellano SR e pending NVIC con barriera; l’handler ignora richieste senza UIF/UIE. TC cancella anche il timer di sorveglianza precedente.
+- **Alto, DMX512UARTInterrupt:** in TX il ramo scartava RDR e ritornava prima di cancellare FE/NE/ORE. Un errore latched può riattivare continuamente USART1 e impedire il refresh watchdog. Ora gli errori sono cancellati anche nel ramo TX, senza interpretare eco/disturbi come nuovi frame.
+
+Questi difetti sono compatibili con i sintomi, ma il loro ruolo causale sulla scheda va confermato riprogrammando e ricontrollando reset/forme d’onda. Nessuna modifica a watchdog, clock, EEPROM, parser di rete o durata impulsi relè.
+
+Aggiunta query CDC di sola lettura **`rdm?`**, disponibile anche dopo i 30 s di fabbrica: `rdm=1 uid=17FA:E7164570 rx=N late=N`. `rdm=0` segnala responder disabilitato; `rx` conta i pacchetti RDM completi e validati nel main, anche non destinati a questo UID; `late` conta quelli scartati oltre la finestra di servizio di 2 ms con responder abilitato e TX libero. Non sono contatori dei singoli byte UART, né una prova di ricezione sul controller. Query senza I²C o scritture EEPROM. Se `rx=0` dopo discovery, verificare percorso RX/framing; se `late` cresce, misurare latenza superloop; con `rx>0` e `late=0` verificare risposta fisica DE/TX e discovery.
+
+Test aggiunti e superati: richiesta TIM7 spuria durante turnaround non avanza lo stato, URS attivo, timer fermato al TC, FE/NE/ORE durante TX cancellati senza aborto, diagnostica UID e timeout, query CDC dopo lock fabbrica. I dieci gruppi host restano PASS. La simulazione non emula integralmente il bus APB/NVIC: verifica le guardie e il recupero, non riproduce una misura degli impulsi hardware. Build ARM correttiva: `/private/tmp/adsw100-node-rdm-fix/ADSW100.elf`, 150 unità; collaudo fisico della correzione pendente.
+
+### Architettura e riutilizzo
+
+| File/funzioni | Implementazione corrente e provenienza |
+| --- | --- |
+| `dmx_512.c`: InitDMX512, DMX512UARTInterrupt, DMX512_Service | Unico proprietario USART1 RX/TX. Conservati staging/pending e snapshot DMX precedente. Aggiunta raccolta pacchetti RDM (massimo 257 byte), decodificati nel main. Nessun DMA concorrente. |
+| `dmx_512.c`: TIM7_IRQHandler, DMX512_SendPacket, NodeTryStart | TX interrupt TXE/TC, BREAK GPIO 176 µs, MAB 16 µs, slot UART 250000 8N2 (44 µs), massimo 513 byte. TIM7 one-shot a 1 MHz dal clock APB1 timer 240 MHz; TIM6 e servizio relè invariati. Sorveglianza TX 30 ms: timeout rilascia DE e ripristina RX. Nessuna HAL_Delay nel nuovo driver TX. |
+| `rdm.c/h`: RDM_Init, RDM_Receive, RDM_Task | Unico nuovo modulo runtime, necessario per separare PID/discovery dalla macchina hardware. Framing/discovery e UID ripresi concettualmente da RSH7/DRV_STG4; non importati router, controller o updater. Salvataggio EEPROM fuori ISR. |
+| `cfg_io.c/h`: CFG_GetValue, CFG_SetValue | Accesso comune validato a indirizzo, ruolo porta, modalità legacy, due universi, trasporto/priorità, ordine Auto, display/OFF Time e rete. Valori IPv4 nella rappresentazione lwIP già esistente; protocolli RDM serializzati nell’ordine di rete. API predisposte per web senza nuova logica o campi duplicati. |
+| `user_interface.c`: handle_page_dmx_event, UI_DmxParameter | Tre righe Address, Mode (IN/ArtNet Node/sACN Node), Universe. In IN Universe è inattivo. Editing su candidato locale: annullamento senza effetti; conferma valida e salva, errore EEPROM ripristina RAM. Navigazione generale e codice menu invariati. |
+| `relay_driver.c`: selezione RelayTask | Node Art-Net/sACN seleziona per i 12 relè la stessa sorgente del TX, rispettando Address, soglie, OFF Time, impulsi e guardia esistenti. IN mantiene il selettore legacy Auto/Art-Net/sACN/DMX. |
+| `eeprom.c`: EE_LoadIdentity, EE_LoadConfig, EE_StoreConfig | Struttura 3, solo ruolo marcato B0/B1/B2 a 0x27; migrazione da struttura 2 a IN. Dettagli e fault injection in EEPROM_MIGRATION.md. |
+| `main.c`, `h_files.h` | Integrazione init RDM e servizio DMX/RDM nel superloop, dentro USER CODE nei file generati. Nessuna modifica IOC, linker o librerie vendor. |
+
+Pin confermati **dal codice generato**, non dal cablaggio misurato: PB14 USART1_TX AF4, PB15 USART1_RX, PD8 RDM_DIR; basso RX, alto TX secondo implementazione. UART1 250 kbit/s, 8N2, clock periferica 120 MHz. TIM7 risultava libero nel progetto (vettore weak in startup); ora configurato dall’applicazione. La rigenerazione CubeMX non deve assegnarlo ad altri servizi.
+
+Riferimento prioritario direzione/finestre: `FIRMWARE_DRV_STG4/Core/Src/dmx.c` (TXE/TC, BREAK/MAB, ascolto iniziale, finestre 2/20 ms, pausa su controller). RSH7: `RDM_SPLITTER_H7`, incluso ramo `origin/Uploading-firmware-da-DMX`; URC01: confronto driver e futura compatibilità hardware updater, **nessun protocollo update implementato**. L’hardware e i timer specifici dei riferimenti non sono stati copiati senza adattamento.
+
+### Art-Net/sACN Node e assenza sorgente
+
+Non sono stati duplicati o modificati i parser. Il TX legge esclusivamente ArtNet_GetSlotsView/sACN_GetSlotsView, quindi mantiene universo, merge, sequence, priorità e arbitraggio già presenti. I due universi EEPROM restano quelli originali, rispettivamente 0..32767 e 1..63999. La modalità sorgenti legacy mantiene significato e valore: il nuovo ruolo porta è indipendente.
+
+Trasmissione SC=0 + 512 slot, coda mancante a zero. Cache pubblicata dal main e copiata stabilmente all’avvio frame. Sorgente non disponibile: zero al frame successivo dopo la scadenza prevista dai parser (Art-Net 3 s, sACN 2,5 s). Se il main smette di aggiornare la cache, TX autonomo passa a zero oltre 50 ms; non conserva livelli indefinitamente. I relè seguono la sorgente scelta con OFF Time esistente, senza tagliare gli impulsi durante le transizioni.
+
+Da TC viene rilasciato DE; ascolto ordinario 2 ms, 20 ms ogni 32 trasmissioni. Periodo teorico ordinario circa 24,8 ms (~40 Hz), frame con finestra lunga circa 42,8 ms: **calcolo**, non misura. All’ingresso Node ascolto iniziale 2 s. Attività RX recente rinvia il TX di 30 ms; DMX qualificato temporalmente o pacchetto RDM valido osservato sospende TX autonomo per 2 s. Linea bassa/errori UART/byte pendenti impediscono un nuovo BREAK. Passaggio IN/OUT differito fino a fine TX (TC), poi pulizia buffer e cambio ruolo senza reset.
+
+La RS485 è half-duplex: durante TX RE è disabilitato. Traffico RDM viene ricevuto/rilevato **nelle finestre RX**, anche in Node; i messaggi diretti al proprio UID usano lo stesso responder. Non c’è monitoraggio durante il proprio TX, controller RDM, discovery di altri dispositivi o garanzia anticollisione tra sorgenti asincrone. Due controller permanenti sullo stesso link non sono una topologia supportata; un altro controller rilevato ha precedenza tramite sospensione. Le finestre non degradano il refresh per il solo fatto di essere abilitate; traffico di un altro controller può sospenderlo intenzionalmente.
+
+### RDM: identità, comandi e PID
+
+Manufacturer ID comune **0x17FA**, già autorizzato per tutti i brand. UID = 17FA + ultimi quattro byte EUI-48 fisico, con whitelist dei 15 OUI verificati nel riferimento DRV_STG4 (ultimo byte OUI distinto). Preserva seriale e discriminante OUI, senza hash. Errore I²C/OUI non riconosciuto: RDM disabilitato, DMX/Node restano utilizzabili; nessun UID fittizio. Da censire unicità nell’intero parco AXN e BOM E48/E64.
+
+Model ID numerico **0xFFFF è un placeholder non assegnato**, non un identificativo inventato presentato come registrato. Nei riferimenti esaminati compaiono RSH7 modello 0x0001, URC01 0x0100, DRV_STG4 0x005E, nel dominio storico 0x0206. Ottenere l’assegnazione ADSW100/NODIM01 dal registro completo manufacturer 17FA prima del rilascio. Model description/manufacturer label provengono da Brand_Current, non da stringhe replicate. OEM Art-Net non assegnato: nessuna sostituzione con quello RSH7.
+
+Discovery UNIQUE_BRANCH/MUTE/UNMUTE, risposta discovery senza BREAK; risposte normali ACK/NACK con checksum, PDL, transaction e sub-device verificati. Root device; SET broadcast senza risposta, GET broadcast ignorato; sub-device inesistenti NACK. Turnaround pianificato a 200 µs dal timestamp ultimo byte (margine sul minimo), richieste già oltre 2 ms scartate prima di applicare SET. Questo protegge da risposte tardive, ma non garantisce che il main serva ogni richiesta sotto carico: misure obbligatorie.
+
+| PID standard | Accesso e formato dati principali |
+| --- | --- |
+| 0x0050 SUPPORTED_PARAMETERS | GET, lista PID uint16 BE |
+| 0x0051 PARAMETER_DESCRIPTION | GET con PID uint16; descrizione completa dei proprietari, tipo/range/default/unità |
+| 0x0060 DEVICE_INFO | GET, 19 byte; protocollo 1.0, footprint 12, categoria power control 0x0601, una personality |
+| 0x0080 / 0x0081 | GET model description / manufacturer label centralizzati |
+| 0x0082 DEVICE_LABEL | GET/SET, massimo 32 caratteri ASCII; **volatile**, default modello al boot: nessun campo/stringa EEPROM aggiunto |
+| 0x00C0 | GET software version label |
+| 0x00E0 / 0x00E1 | Personality unica / descrizione; GET e SET=1 per E0 |
+| 0x00F0 DMX_START_ADDRESS | GET/SET uint16 BE, 1..512 come legacy; indirizzi oltre 501 riducono gli slot disponibili ai 12 relè |
+| 0x1000 IDENTIFY_DEVICE | GET/SET bool; lampeggio retroilluminazione, nessun azionamento dei relè |
+| 0x0700 / 0x0701 / 0x0702 | Lista interfacce / label / MAC: Ethernet ID=1 uint32 BE, tipo hardware ARP Ethernet=1 |
+| 0x0703 IPV4_DHCP_MODE | GET richiesta ID4, risposta ID4+bool; SET ID4+bool |
+| 0x0705 IPV4_CURRENT_ADDRESS | GET ID4; risposta ID4+IPv4(4)+prefix(1)+stato DHCP(1) |
+| 0x0706 IPV4_STATIC_ADDRESS | GET ID4; risposta/SET ID4+IPv4(4)+prefix 0..32; netmask derivata senza campo duplicato |
+| 0x0709 INTERFACE_APPLY_CONFIGURATION | SET ID4; GET NACK unsupported command class |
+| 0x070A IPV4_DEFAULT_ROUTE | GET vuoto, risposta/SET ID4+gateway IPv4(4) |
+| 0x070B DNS_IPV4_NAME_SERVER | GET indice 0/1; risposta/SET indice+IPv4(4) |
+
+PID proprietari assegnati internamente al prodotto, dopo ricerca nei riferimenti esaminati: 0x9100..0x9108 non riscontrati; non sono registrazioni ESTA. RSH7 0x8001..03 e DRV_STG4 0x82xx/0xE1xx non sono riutilizzati con significato diverso. Tutti GET (PDL0) e SET (dimensione indicata), numeri multibyte BE:
+
+| PID | Parametro condiviso | Byte/range |
+| --- | --- | --- |
+| 0x9100 | DMX Mode/ruolo porta | 1: IN=0, ArtNet Node=1, sACN Node=2 |
+| 0x9101 | Mode sorgenti legacy | 1: DMX=0, Art-Net=1, sACN=2, Auto=3; attivo in IN |
+| 0x9102 | Art-Net Universe | 2: 0..32767 |
+| 0x9103 | sACN Universe | 2: 1..63999 |
+| 0x9104 | sACN Transport | 1: multicast=0, unicast=1 |
+| 0x9105 | Soglia minima priorità sACN | 1: 0..200; non è una priorità TX o l’ordine Auto |
+| 0x9106 | Ordine protocolli Auto | 1: 0..5, stessa permutazione legacy |
+| 0x9107 | Display Auto OFF | 1: 0/1, inverso del campo legacy backlight |
+| 0x9108 | Relay OFF Time | 1: 0..30 secondi, stessa semantica legacy |
+
+SET applica i parametri condivisi attraverso CFG_SetValue/CFG_ValidateValue. Eccezione richiesta da E1.37-2: SET DHCP e indirizzo statico/netmask restano candidati solo RAM nel responder; GET restituisce il candidato, CURRENT_ADDRESS continua a leggere il netif attivo. Soltanto SET 0x0709 trasferisce i candidati attraverso il setter comune e ne richiede la persistenza. Non ci sono campi EEPROM o configurazioni web duplicati. I candidati non applicati si perdono al reboot. Lo stato DHCP corrente viene da dhcp_supplied_address, non dal solo flag desiderato. Il task rete esistente applica poi DHCP/statico/DNS e membership/universi. Non si dichiara implementazione completa o certificazione E1.37-2. Brand/policy menu non sono esposti da RDM.
+
+Persistenza aggregata da RDM_Task dopo almeno 250 ms dall’ultimo cambiamento e ultimo pacchetto RDM osservato, fuori TX/ISR, retry in caso errore. ACK significa accettazione in RAM; power-cut prima del save può perdere la modifica. Il salvataggio I²C mantiene timeout/read-back preesistenti ed è **bloccante nel main**: TX/TIM6 continuano via IRQ, ma richieste RDM sopraggiunte durante I²C possono scadere. Traffico RDM continuo può posticipare il save. Device label e IDENTIFY non sono persistenti.
+
+Riferimenti primari per identificativi/formati e vincolo half-duplex: [E1.20 ESTA](https://tsp.esta.org/tsp/documents/docs/E1-20RDM_2006.pdf), [E1.11 2024 ESTA](https://tsp.esta.org/tsp/documents/docs/ANSI%20E1.11%20-%202024.pdf), [specifica E1.37-2 pubblicata sul sito ESTA (bozza R202x)](https://tsp.esta.org/tsp/documents/docs/E1-37-2%20-%202015%20%28R202x%29.pdf), [enum RDM OLA](https://raw.githubusercontent.com/OpenLightingProject/ola/master/include/ola/rdm/RDMEnums.h). I sorgenti di riferimento non sostituiscono la misura di conformità.
+
+### Criticità residue e classificazione
+
+| Stato / gravità | File/funzione | Conseguenza e verifica/correzione |
+| --- | --- | --- |
+| Confermato, limite funzionale | rdm.c RDM_Task, eeprom.c EE_Write | I²C sincrono può ritardare responder. Nessuna promessa di ricezione RDM completa sotto ogni carico; misurare latenza e fault bus, valutare save a piccoli passi se necessario. TX Node e impulso relè restano in IRQ. |
+| Rischio, alto | dmx_512.c ISR/SendPacket | Durata sezioni critiche e latenza main non misurate; verificare slot 44 µs e turnaround sotto display/NFC/USB/Ethernet. Richieste tardive vengono scartate. |
+| Verifica HW, alto | PD8 DE/RE, PB14/PB15, TIM7 | Confermare cablaggio RE/DE, livelli e tempo rilascio bus al TC; misurare BREAK/MAB, baud/stop, refresh e assenza impulsi spurii in cambio GPIO/AF. |
+| Limite fisico, alto | NodeTryStart/finestre RX | Nessun ascolto durante TX né arbitraggio multi-controller garantito. Testare sorgente esterna che si attiva durante Node; sospensione solo dopo rilevamento. |
+| Da verificare, medio | rdm.c RDM_Init / rdm.h Model ID | Censire tutti gli UID/OUI fisici sotto 17FA e assegnare Model ID; con EUI non riconosciuto RDM resta disabilitato. |
+| Limite confermato, medio | RDM_Task/DEVICE_LABEL | Save differito non atomico multi-parametro e label volatile. Documentare al controller e testare power-cut reali; non aggiungere CRC/slot/stringhe EEPROM non autorizzati. |
+
+### Test effettivamente eseguiti
+
+- `python3 tests/test_stabilization.py`: **10 gruppi PASS** (ART, SAC, RELAY, CFG, DMX, EE, BRAND_EE, UI, CDC, NODE_RDM).
+- Nuovo harness compila i sorgenti reali EEPROM/config/driver/RDM/relè: discovery/mute/unmute; checksum, GET/SET, NACK PDL/range/PID/command class; richieste tardive e broadcast GET; IDENTIFY e label; descrizioni e round-trip dei nove PID proprietari; IPv4/prefix invalido/DNS, DHCP/IP statico non attivi fino ad APPLY, tipo ARP Ethernet e stato DHCP corrente; identità dei tre brand, UID valido/non riconosciuto.
+- Simulati IN→ArtNet Node→sACN Node→IN senza reset, ricezione fisica DMX dopo TX, risposta RDM nella finestra Node e pausa su controller, TC/DE e timeout TX, livelli/blackout da sorgente assente e main fermo, selezione relè concorde col Node, migrazione v2→v3 con errori I²C/riavvio, persistenza e ruolo invalido, editing/conferma/cancel pannello.
+- Build ARM diretta GCC CubeIDE, **150 unità C/ASM**, ELF/map/log in `/private/tmp/adsw100-node-rdm`; non build Eclipse né programmazione. Log compiler/linker senza warning/errori. Size ELF: text 199652, data 640, bss 71347 byte (non misura picco stack/heap). Riproduzione: `python3 tests/test_stabilization.py --arm-build /tmp/adsw100-node-rdm`.
+- **Non eseguiti su hardware**: analizzatore DMX/RDM, discovery con controller reale, misura refresh/jitter/turnaround/DE/RE, traffico concorrente, power-cut EEPROM, display/relè/NFC/rete sotto stress. Nessuna dichiarazione di collaudo fisico dell’incremento.
 
 ## Prima fase funzionale: branding, EEPROM, accesso menu e CDC
 

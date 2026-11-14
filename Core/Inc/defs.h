@@ -86,11 +86,14 @@
 #define EE_OFFS_MENU_CODE      0x26
 #define EE_BRAND_TAG           0xD0u
 #define EE_MENU_CODE_TAG       0xA4u
-#define EE_VERSION_PENDING     0x00u
-/* Spazio applicativo residuo: 0x27..0x7F; EUI esclusa dalle scritture. */
+#define EE_VERSION_PENDING     0xF3u
+#define EE_OFFS_DMX_PORT_MODE   0x27
+#define EE_DMX_PORT_TAG        0xB0u
+/* Spazio applicativo residuo: 0x28..0x7F; EUI esclusa dalle scritture. */
 
 #define EE_INIT_VALUE			0xA55Au
-#define EE_CFG_VERSION           0x02u
+#define EE_IDENTITY_VERSION      0x02u
+#define EE_CFG_VERSION           0x03u
 
 /* ===================================================================================== */
 /*                               Variabili Globali                                       */
@@ -125,6 +128,15 @@ const brand_info_t *Brand_GetInfo(uint8_t id);
 bool Brand_IsIdentityValid(uint8_t id, uint8_t require_code);
 /* Identità corrente per rendering: fallback sicuro AXN soltanto se RAM invalida. */
 const brand_info_t *Brand_Current(void);
+
+/* Ruolo fisico indipendente dal selettore sorgenti legacy dmx_mode. */
+typedef enum
+{
+    DMX_PORT_IN = 0,
+    DMX_PORT_ARTNET_NODE = 1,
+    DMX_PORT_SACN_NODE = 2
+} dmx_port_mode_t;
+extern uint8_t dmx_port_mode;
 
 extern uint16_t dmx_address;
 extern uint8_t  dmx_mode;				// 0=DMX, 1=ArtNet, 2=sACN, 3 Auto

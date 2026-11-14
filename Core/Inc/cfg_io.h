@@ -48,4 +48,19 @@ bool apply_config_vars(uint8_t dmx_mode_in, uint16_t universe_in,
                        uint8_t net, uint8_t subuni, uint16_t prio_in,
                        bool dhcp_in, const char *ip_str, const char *mask_str, const char *gw_str);
 
+typedef enum
+{
+    CFG_DMX_ADDRESS, CFG_DMX_PORT_MODE, CFG_SOURCE_MODE,
+    CFG_ARTNET_UNIVERSE, CFG_SACN_UNIVERSE, CFG_SACN_TRANSPORT,
+    CFG_SACN_PRIORITY, CFG_AUTO_PRIORITY, CFG_DISPLAY_AUTO_OFF, CFG_OFF_TIME,
+    CFG_USE_DHCP, CFG_IP, CFG_MASK, CFG_GATEWAY, CFG_DNS1, CFG_DNS2,
+    CFG_PARAMETER_COUNT
+} cfg_parameter_t;
+/* Main, valore numerico; IPv4 è raw lwIP. Setter valida prima di applicare,
+   senza EEPROM: il chiamante sceglie commit immediato UI o differito RDM. */
+bool CFG_GetValue(cfg_parameter_t parameter, uint32_t *value);
+bool CFG_ValidateValue(cfg_parameter_t parameter, uint32_t value);
+bool CFG_SetValue(cfg_parameter_t parameter, uint32_t value);
+const char *CFG_DmxPortName(uint8_t mode);
+
 #endif /* INC_CFG_IO_H_ */

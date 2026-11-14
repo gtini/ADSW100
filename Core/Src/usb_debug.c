@@ -134,6 +134,12 @@ void USB_ServiceTask(void)
     bool code_query = strcmp(line, "menu_code?") == 0;
     bool brand_write = strncmp(line, "brand=", 6) == 0;
     bool code_write = strncmp(line, "menu_code=", 10) == 0;
+    if (strcmp(line, "rdm?") == 0)
+    {
+        RDM_FormatDiagnostics(s_service_response, sizeof s_service_response);
+        s_service_response_pending = true;
+        return;
+    }
     if (brand_query || code_query)
     {
         uint8_t id, code;

@@ -4,6 +4,7 @@
 #include "h_files.h"
 #include "defs.h"
 
+uint8_t dmx_port_mode = DMX_PORT_IN;
 uint8_t g_netmask_bad = 0;   // 0 = ok, 1 = netmask sospetta/errata
 
 
@@ -243,14 +244,23 @@ static HAL_StatusTypeDef EE_LoadIdentity(uint8_t *b, uint8_t *id, uint8_t *code)
         *code = b[EE_OFFS_MENU_CODE] & 1u;
         if (!Brand_IsIdentityValid(*id, *code)) return HAL_ERROR;
         if (b[EE_OFFS_VERSION] == EE_CFG_VERSION) return HAL_OK;
-        if (b[EE_OFFS_VERSION] != EE_VERSION_PENDING) return HAL_ERROR;
-        /* Riprende un commit interrotto dopo la verifica di entrambi i campi. */
+        uint8_t version = b[EE_OFFS_VERSION];
+        if (version == EE_IDENTITY_VERSION || version == 0)
+        {
+            /* La v2 non definiva 0x27: IN esplicito, mai interpretare spazzatura come OUT. */
+            HAL_StatusTypeDef st = EE_WriteU8(EE_OFFS_DMX_PORT_MODE, EE_DMX_PORT_TAG | DMX_PORT_IN);
+            if (st != HAL_OK) return st;
+            return EE_WriteU8(EE_OFFS_VERSION, EE_CFG_VERSION);
+        }
+        if (version != EE_VERSION_PENDING) return HAL_ERROR;
         return EE_WriteU8(EE_OFFS_VERSION, EE_CFG_VERSION);
     }
-    if (b[EE_OFFS_VERSION] == EE_CFG_VERSION && (brand_tag || code_tag)) return HAL_ERROR;
+    if ((b[EE_OFFS_VERSION] == EE_CFG_VERSION || b[EE_OFFS_VERSION] == EE_IDENTITY_VERSION) && (brand_tag || code_tag)) return HAL_ERROR;
     /* Layout/magic legacy validati: Videlio con codice, come i dispositivi installati. */
     *id = BRAND_VIDELIO;
     *code = Brand_GetInfo(BRAND_VIDELIO)->menu_code_default;
+    HAL_StatusTypeDef st = EE_WriteU8(EE_OFFS_DMX_PORT_MODE, EE_DMX_PORT_TAG | DMX_PORT_IN);
+    if (st != HAL_OK) return st;
     return EE_StoreIdentity(*id, *code);
 }
 
@@ -274,6 +284,11 @@ HAL_StatusTypeDef EE_LoadConfig(void)
     uint8_t loaded_brand, loaded_code;
     st = EE_LoadIdentity(b, &loaded_brand, &loaded_code);
     if (st != HAL_OK) return st;
+    uint8_t port;
+    st = EE_Read(EE_OFFS_DMX_PORT_MODE, &port, 1);
+    if (st != HAL_OK) return st;
+    if (port < EE_DMX_PORT_TAG || port > (EE_DMX_PORT_TAG | DMX_PORT_SACN_NODE)) return HAL_ERROR;
+    dmx_port_mode = port & 3u;
     brand = loaded_brand;
     menu_code_required = loaded_code;
     use_dhcp = b[EE_OFFS_USE_DHCP];
@@ -301,7 +316,7 @@ HAL_StatusTypeDef EE_LoadConfig(void)
    Il formato non è atomico a power-cut: nessun nuovo slot autorizzato. */
 static HAL_StatusTypeDef EE_StoreConfig(bool defaults, bool preserve_identity)
 {
-    uint8_t b[EE_OFFS_PROTO_PRIORITY + 1], verify[sizeof b];
+    uint8_t b[EE_OFFS_DMX_PORT_MODE + 1], verify[sizeof b];
     HAL_StatusTypeDef st = EE_Read(0, b, sizeof b);
     if (st != HAL_OK) return st;
     if (!defaults)
@@ -340,10 +355,11 @@ static HAL_StatusTypeDef EE_StoreConfig(bool defaults, bool preserve_identity)
     b[EE_OFFS_LCD_BACKLIGHT] = defaults ? CFG_DEFAULT_LCD_BL : lcd_backlight;
     b[EE_OFFS_OFF_TIMEOUT_S] = defaults ? CFG_DEFAULT_OFF_TIMEOUT_S : off_timeout_s;
     b[EE_OFFS_PROTO_PRIORITY] = defaults ? CFG_DEFAULT_PROTO_PRIORITY : proto_priority;
-    /* Non riscrive i byte riservati 0x02 e 0x1B. */
+    b[EE_OFFS_DMX_PORT_MODE] = EE_DMX_PORT_TAG | (defaults ? DMX_PORT_IN : dmx_port_mode);
+    /* Non riscrive versione, gap o identità di fabbrica nel save ordinario. */
     for (unsigned i = 0; i < sizeof b; ++i)
     {
-        if (i == EE_OFFS_VERSION || i == 0x1B || (defaults && i < 2)) continue;
+        if (i == EE_OFFS_VERSION || i == 0x1B || i == EE_OFFS_BRAND || i == EE_OFFS_MENU_CODE || (defaults && i < 2)) continue;
         uint8_t old;
         st = EE_Read(i, &old, 1);
         if (st != HAL_OK) return st;
@@ -358,6 +374,8 @@ static HAL_StatusTypeDef EE_StoreConfig(bool defaults, bool preserve_identity)
             st = EE_StoreIdentity(BRAND_AXN, Brand_GetInfo(BRAND_AXN)->menu_code_default);
             if (st != HAL_OK) return st;
             b[EE_OFFS_VERSION] = EE_CFG_VERSION;
+            b[EE_OFFS_BRAND] = EE_BRAND_TAG | BRAND_AXN;
+            b[EE_OFFS_MENU_CODE] = EE_MENU_CODE_TAG | Brand_GetInfo(BRAND_AXN)->menu_code_default;
         }
         st = EE_WriteU16(EE_OFFS_INIT, EE_INIT_VALUE);
         if (st != HAL_OK) return st;
@@ -416,7 +434,7 @@ HAL_StatusTypeDef EE_SaveIdentity(uint8_t new_brand, uint8_t require_code)
 
 HAL_StatusTypeDef EE_SaveConfig(void)
 {
-    if (!Brand_IsIdentityValid(brand, menu_code_required) || use_dhcp > 1 || dmx_address < 1 || dmx_address > 512 || dmx_mode > 3 ||
+    if (dmx_port_mode > DMX_PORT_SACN_NODE || !Brand_IsIdentityValid(brand, menu_code_required) || use_dhcp > 1 || dmx_address < 1 || dmx_address > 512 || dmx_mode > 3 ||
         artnet_universe > 32767 || sacn_universe < 1 || sacn_universe > 63999 ||
         sacn_transport > 1 || sacn_min_prio > 200 || off_timeout_s > 30 || proto_priority > 5) return HAL_ERROR;
     return EE_StoreConfig(false, false);

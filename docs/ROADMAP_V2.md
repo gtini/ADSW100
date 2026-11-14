@@ -1,6 +1,44 @@
 # ADSW100 v2.0.0 — roadmap incrementale
 
-Stato al 14 novembre 2026: base clock/stabilizzazione implementata e verificata con build/test software; nuove funzionalità v2 ancora da sviluppare. Le caselle software chiuse attestano implementazione/verifica statica o host; ogni verifica hardware resta un gate separato. Audit in [AUDIT.md](AUDIT.md), persistenza in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md). L'utente ha successivamente autorizzato porting 480 MHz e stabilizzazione, senza commit/tag o nuove funzionalità. Rigenerazione CubeMX eseguita dall’utente; arresto superato e stabilizzazione ripresa.
+Stato al 14 novembre 2026: baseline 480 MHz/stabilizzazione e branding/migrazione collaudati dall’utente (`0b5fa6c`, `1e71467`). Incremento RDM/Node implementato e verificato con build ARM e test host; collaudo fisico ancora da eseguire. Le caselle software non attestano misure hardware. Nessun commit/tag automatico. Audit in [AUDIT.md](AUDIT.md), persistenza in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md).
+
+## Incremento corrente — RDM responder e DMX Node
+
+- [x] Confrontare RX/TX URC01/RSH7 e usare prioritariamente DRV_STG4 per direzione/finestre RS485.
+- [x] Verificare dal progetto PB14 TX AF4, PB15 RX, PD8 direzione, USART1 250000 8N2; TIM7 libero, TIM6 relè preservato.
+- [x] Driver unico RX DMX/RDM e TX interrupt TXE/TC, BREAK 176 µs/MAB 16 µs via TIM7, watchdog TX e rilascio DE al TC.
+- [x] Responder discovery/mute/unmute, UID da EUI fisico senza fallback, GET/SET/ACK/NACK, DEVICE_INFO/label/IDENTIFY/address/personality.
+- [x] DHCP/IP statico RDM attivati soltanto su INTERFACE_APPLY_CONFIGURATION, con validazione comune e GET configurato distinto da CURRENT_ADDRESS.
+- [x] PID standard rete e proprietari 9100..9108 con PARAMETER_DESCRIPTION, range/PDL e nomi centralizzati; matrice in AUDIT.md.
+- [x] API comuni CFG_GetValue/CFG_SetValue per pannello DMX, RDM e futuro web; nessuna configurazione universi duplicata.
+- [x] DMX IN/ArtNet Node/sACN Node; OUT usa i dati già validati/arbitrati dai parser; nessun nuovo parser.
+- [x] Pannello DMX Address/Mode/Universe, conferma e cancel, Universe inattivo in IN; Home mostra ruolo Node.
+- [x] Node con finestre RX, ascolto iniziale e sospensione TX su controller rilevato; nessun controller RDM aggiuntivo.
+- [x] Blackout dati alla scadenza sorgente, zeri oltre 50 ms senza aggiornamento main; relè coerenti con sorgente Node e OFF Time esistente.
+- [x] EEPROM struttura3, solo ruolo a27 marcato; migrazione esplicita a IN con payload/identità preservati e versione commessa per ultima.
+- [x] Test host: dieci gruppi PASS, inclusi RX dopo TX, RDM nella finestra Node, IN→Node→IN senza reboot, persistenza/fault I²C, UI e watchdog TX.
+- [x] Build ARM 150 unità, zero errori/warning; aggiornare audit e specifica EEPROM.
+- [ ] Misurare con oscilloscopio BREAK/MAB/44 µs, TC→DE, refresh/jitter e tempo sezioni critiche, sotto Ethernet/display/NFC/USB/I²C.
+- [ ] Test discovery/GET/SET/NACK/IDENTIFY con controller reale nei tre brand; verificare latenza/timeout e save differito, inclusi guasti bus I²C.
+- [ ] Verificare DE/RE e ascolto nelle pause Node; accensione controller durante TX, collisioni e sospensione/ripresa. Nessun ascolto simultaneo al proprio TX è fisicamente garantito.
+- [ ] Test rete fisica Art-Net/sACN, perdita sorgente, riavvio e entrambi universi; regressione DMX IN/relè e OFF Time.
+- [ ] Power-cut reali della migrazione v2→v3 e dei SET RDM aggregati; acquisire dump Videlio.
+- [ ] Censire UID sotto manufacturer17FA e assegnare Model ID (placeholder FFFF) e registrare PID9100..9108 nel registro completo AXN prima del rilascio; OEM ancora non assegnato.
+- [ ] Valutare con misure se serva salvataggio I²C a piccoli passi per non perdere richieste RDM: il nuovo TX è non bloccante, il save main resta sincrono.
+
+Gate: questo incremento non implementa web, bootloader/updater DMX/USB o nuovi campi NFC. L’API trasmissione prepara il futuro riuso hardware dell’updater, senza affermare compatibilità del protocollo già realizzata. Label RDM volatile e semantica di apply rete corrente documentate nell’audit.
+
+## Correzione dopo primo test RDM/Node
+
+- [x] Analizzare segnalazione utente: DMX IN OK, URC01 senza discovery, reboot periodico in ArtNet Node.
+- [x] Verificare dal log EUI-48 FC:0F:E7:16:45:70 e UID atteso 17FA:E7164570; OUI già ammesso, nessuna modifica dell’identità.
+- [x] Correggere riarmo TIM7: UIE mascherato, URS=1, cancellazione SR/pending NVIC, guardia UIF/UIE e cancellazione watchdog TX al TC.
+- [x] Cancellare errori UART FE/NE/ORE anche durante TX per evitare interrupt ripetuti senza avanzamento.
+- [x] Aggiungere query CDC rdm? di sola lettura (abilitazione, UID, pacchetti validi e richieste tardive), indipendente dal lock fabbrica.
+- [x] Dieci gruppi host PASS con regressioni IRQ spurio/errori TX e diagnostica; build ARM 150 unità.
+- [ ] Riprogrammare correzione, confermare assenza reset a riposo e durante IN→Node→IN e sorgenti Art-Net/sACN.
+- [ ] Discovery/GET/SET URC01 con UID 17FA:E7164570; rilevare rdm? prima/dopo ricerca e misurare risposta sul bus.
+- [ ] Confermare origine del reset tramite flag/backup crash: il primo log contiene reboot ma non reset flags.
 
 ## Prima fase funzionale approvata — branding/EEPROM/menu
 
@@ -20,7 +58,7 @@ Baseline `0b5fa6c` validata su hardware dall'utente. Le caselle seguenti indican
 
 Default CDC `brand=`: AXN codice OFF, Videlio ON, Generic sempre OFF. AXN/Videlio ammettono override nella medesima finestra. UI senza voci identità; reset utente preserva i valori persistiti. Query `brand?`/`menu_code?` sempre disponibili. RSH7 fornisce la sintassi `brand=`/`OK REBOOT`; `menu_code=` segue la stessa forma.
 
-RDM, web, bootloader, nuovi PID/ID uploader e nuove funzioni NFC restano esclusi. La precedente decisione di rinviare ogni migrazione è superata esclusivamente per i tre campi ora autorizzati; nessun doppio slot/CRC viene introdotto.
+La fase branding è conclusa e collaudata dall’utente. La nuova autorizzazione include RDM/Node e il solo ulteriore byte ruolo porta; web, bootloader, controller RDM e nuove funzioni NFC restano rinviati. Nessun doppio slot/CRC.
 
 ## Fase 0 — baseline e decisioni
 
@@ -94,12 +132,12 @@ Verifica: tutte le tre identità e fallback su brand invalido senza convertire a
 
 ## Fase 6 — RDM e NFC
 
-- [ ] Portare responder e validazione/discovery dai riferimenti, mantenendo il driver DMX ADSW100 ove possibile.
+- [x] Portare responder e validazione/discovery dai riferimenti, mantenendo il driver DMX ADSW100 ove possibile (incremento RDM/Node; hardware pendente).
 - [ ] Confermare hardware bidirezionale DE/RE, timing risposte e assenza collisioni UID nel dominio manufacturer.
-- [ ] Matrice PID: DMX Address standard 0x00F0 (GET/SET, 2 byte); verificare standard/assegnazioni per tutti gli altri parametri.
-- [ ] Definire formati, range, GET/SET, PDL, NACK e descrizioni per IP, Netmask, Gateway, DNS, Auto/DMX/Art-Net/sACN, Priority, Display Auto OFF, OFF Time in secondi.
-- [ ] Distinguere Priority sACN dall'ordine dei protocolli Auto ed esporre entrambi dove previsto.
-- [ ] Non riutilizzare PID DRV_STG4 0x8200/01 o RSH7 0x8001/02/03 con significati diversi senza verifica formale.
+- [x] Matrice PID documentata in AUDIT.md: DMX Address standard 0x00F0 (GET/SET, 2 byte); verificare standard/assegnazioni per tutti gli altri parametri.
+- [x] Definire formati, range, GET/SET, PDL, NACK e descrizioni per IP, Netmask, Gateway, DNS, Auto/DMX/Art-Net/sACN, Priority, Display Auto OFF, OFF Time in secondi.
+- [x] Distinguere Priority sACN dall'ordine dei protocolli Auto ed esporre entrambi dove previsto.
+- [x] Non riutilizzare PID DRV_STG4 0x8200/01 o RSH7 0x8001/02/03 con significati diversi senza verifica formale.
 - [ ] Identificare l'implementazione NFC DRV_STG4 effettivamente disponibile; nel checkout esaminato non è stata confermata.
 - [ ] NFC: schema versionato completo, magic/device binding, range e applicazione solo dopo migrazione valida.
 - [ ] Gestire conflitti RF/I²C e sincronizzazione modifiche pannello/RDM/NFC/web senza sovrascritture da dati NFC obsoleti.
@@ -111,7 +149,7 @@ Verifica: round-trip di ogni campo su tutti i canali, permessi e persistenza; di
 - [ ] Riutilizzare HTTP raw/asset e impostazione RSH7, senza framework nuovo.
 - [ ] Home con brand/modello dinamico, rete, sorgente, diagnostica e stato 12 relè.
 - [ ] SVG modulo DIN 12 uscite, connettori e indicatori da specifiche/foto/disegni verificati, riusando elementi RSH7.
-- [ ] Configuration: DMX, rete completa DNS inclusi, Art-Net, sACN, Auto/priorità, display e OFF Time.
+- [ ] Configuration: Address, Mode IN/ArtNet Node/sACN Node, Universe sul protocollo scelto con range e campi condivisi CFG_GetValue/CFG_SetValue; rete completa DNS inclusi, Art-Net, sACN, Auto/priorità, display e OFF Time.
 - [ ] Validazione comune, gestione errori e applicazione configurazione senza divergenze dal pannello.
 - [ ] Quantificare flash asset, heap/pbuf e latenza servizio relè con HTTP concorrente.
 

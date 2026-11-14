@@ -204,7 +204,9 @@ void RelayTask(void)
 {
     const uint8_t *data = NULL;
     uint16_t count = 0;
-    if (dmx_mode == 3)
+    uint8_t selected = dmx_port_mode == DMX_PORT_ARTNET_NODE ? 1 :
+                       dmx_port_mode == DMX_PORT_SACN_NODE ? 2 : dmx_mode;
+    if (selected == 3)
     {
         uint8_t pri = proto_priority < 6 ? proto_priority : 0;
         for (unsigned k = 0; k < 3; ++k)
@@ -219,7 +221,7 @@ void RelayTask(void)
     }
     else
     {
-        active_proto = dmx_mode;
+        active_proto = selected;
         count = Relay_GetSource(active_proto, &data);
     }
     uint16_t mask = 0;

@@ -1,6 +1,50 @@
 # EEPROM: compatibilità e migrazione Videlio
 
-Data: 14 novembre 2026. Stato: prima fase funzionale implementata sulla baseline 480 MHz `0b5fa6c`, collaudata dall’utente. Migrazione e menu verificati con test software; collaudo fisico della nuova fase ancora da eseguire.
+Data: 14 novembre 2026. Stato: baseline 480 MHz `0b5fa6c` e branding/migrazione struttura2 `1e71467` collaudati dall’utente. Nuovo incremento struttura3/ruolo DMX verificato con build e test host; collaudo fisico ancora da eseguire.
+
+## Stato corrente: struttura 3 per il ruolo DMX
+
+Le sezioni successive conservano l’analisi legacy e la precedente implementazione della struttura 2. Quella fase è stata collaudata positivamente dall’utente (`1e71467`). L’incremento RDM/Node porta la versione struttura a **3**, senza cambiare i 128 byte disponibili, il magic o il significato di alcun parametro legacy.
+
+| Offset | Struttura 2 | Struttura 3 |
+| --- | --- | --- |
+| 0x00..01 | Magic A5 5A | Identico |
+| 0x02 | Versione 02, pendente 00 | Versione 03, nuovo pendente F3 |
+| 0x03..24 | Payload legacy e gap 1B | Identico, stessi offset/formati |
+| 0x25 | D0/D1/D2 brand | Identico |
+| 0x26 | A4/A5 menu code | Identico |
+| 0x27 | Indefinito, non interpretare | B0 IN, B1 ArtNet Node, B2 sACN Node |
+| 0x28..7F | Non usato | Preservato |
+| Area EUI fisica | Solo lettura | Solo lettura, usata anche per UID RDM |
+
+**Mode legacy a 0x1A rimane 0=DMX, 1=Art-Net, 2=sACN, 3=Auto.** Il ruolo porta 0x27 è un parametro indipendente: IN mantiene l’arbitraggio/relè preesistenti; Node sceglie una delle due sorgenti di rete già configurate per DMX OUT e relè. Non duplicare universi: 0x1C..1D Art-Net e 0x1E..1F sACN restano gli unici campi. Address resta quello dei 12 relè, non un offset del frame DMX OUT (trasmette tutti i 512 slot).
+
+La successiva correzione dei reset Node e degli interrupt TX/RDM non cambia mappa, versione struttura, migrazione o contenuto EEPROM. La nuova query CDC `rdm?` è esclusivamente diagnostica e non effettua accessi I²C né scritture di configurazione. Non cancellare EEPROM per provare questa correzione.
+
+### Migrazione e recovery attuali
+
+1. EE_LoadConfig legge 0x00..26, verifica esito I²C, magic e payload/range prima di ogni eventuale scrittura. Classificazione attraverso versione **insieme** ai tag brand/policy; nessuna deduzione dal solo byte 02.
+2. Struttura 2 con tupla identità valida, oppure precedente stato pendente 00 con tupla completa: preserva brand e policy, scrive **B0 a 27**, verifica read-back, infine versione 03. Il vecchio byte 27 viene ignorato anche se per caso vale B1/B2. Nessun vecchio dispositivo diventa trasmettitore accidentalmente.
+3. Legacy valido privo di identità marcata: scrive/verifica ruolo IN, poi migra Brand1/codice ON con marcatore pendente F3 e commit finale 03. Il payload originale resta intatto. Gli stessi criteri legacy preesistenti restano applicati; versione futura con tag coerenti viene rifiutata.
+4. Struttura 3 completa: accetta soltanto ruolo B0..B2. B3 o byte non marcato sono errori, senza normalizzazione/default o pubblicazione RAM parziale. Una rilettura dopo migrazione completata non scrive.
+5. Nuovi aggiornamenti della sola identità CDC usano F3, così il recovery non li scambia con una migrazione v2 e non azzera un ruolo OUT esistente. Coppia completa con F3: completa versione03, poi verifica il ruolo prima di pubblicare. Tupla parziale incoerente con versione2/3 è rifiutata. Interruzione analogica che corrompe un byte in un valore ignoto resta un errore conservativo, non una ricostruzione garantita.
+6. Init esplicito/reset impostano IN. Init nuova imposta AXN/codice OFF; reset utente conserva identità/policy come prima. Magic commesso per ultimo nell’inizializzazione. Il load su EEPROM vergine o bus guasto **non inizializza automaticamente**.
+7. Salvataggi ordinari preservano byte 02/25/26 e gap1B; possono aggiornare soltanto il nuovo ruolo e i parametri applicativi esistenti. Brand/policy CDC restano protetti, anche prima del riavvio.
+
+L’ordine delle scritture protegge i parametri legacy durante questa migrazione; non rende atomico il salvataggio di un insieme di parametri. Nessun CRC/doppio slot. Il byte F3 è un discriminante del nuovo protocollo di aggiornamento, non un checksum. Una configurazione senza tag resta soggetta al riconoscimento legacy già validato nella fase precedente.
+
+### Persistenza e prove dell’incremento
+
+Pannello DMX e PID RDM 9100/9102/9103 usano gli stessi parametri e gli stessi controlli CFG_GetValue/CFG_SetValue. Conferma pannello salva con verifica errore; cancel non applica. RDM mantiene i candidati DHCP/IP statico/netmask solo in RAM fino a INTERFACE_APPLY_CONFIGURATION, quindi usa il setter comune. Aggrega i SET applicati e salva dopo 250 ms di quiete, con retry I²C: ACK conferma RAM, non un commit sincrono EEPROM. Label RDM è volatile; nessuna stringa aggiunta alla mappa. NFC legacy invariato e nessuna nuova codifica NFC introdotta.
+
+- [x] Test host migrazione v2→v3, anche con byte27=B2 precedente, preservando ogni altro byte salvo versione e ruolo.
+- [x] Fault injection per gli accessi I²C e read-back della migrazione; riavvio/rilettura idempotente.
+- [x] Persistenza ruolo sACN Node e modalità sorgenti legacy Auto, ritorno IN; rifiuto B3.
+- [x] Regressioni precedenti di identità, Generic/codice, default e 256 valori byte versione legacy.
+- [x] Test UI su conferma/cancel ruolo e modifica dei due universi, senza campi duplicati.
+- [x] Build ARM 150 unità e dieci gruppi host PASS; comandi in AUDIT.md.
+- [ ] Power-cut fisico durante ruolo→versione, CDC pendente F3 e salvataggio aggregato RDM.
+- [ ] Dump installati e riavvio hardware con Mode e ciascun universo, mantenendo identità e tutti i parametri Videlio.
 
 ## Evidenze v1.4.0 e Videlio v1.4.1
 

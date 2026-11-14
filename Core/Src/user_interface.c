@@ -99,6 +99,8 @@ static uint8_t g_mac[6] = {0};
 static bool    g_mac_valid = false;
 
 // Selettori locali per pagine con più campi
+static uint8_t s_dmx_sel;
+static uint32_t s_dmx_edit_value;
 static uint8_t s_net_sel = 0;           // 0..5 (DHCP,IP,Subnet,DNS1,DNS2,GW)
 static uint8_t s_ip_octet_sel = 0;      // 0..3
 static uint8_t s_sacn_sel = 0;          // 0..2 (Universe, Cast, Priority)
@@ -402,7 +404,13 @@ static void render_home(void)
 	// Aggiorna solo i campi che cambiano
 	char tmp[24];
 
-	if (dmx_mode == 3)
+    if (dmx_port_mode != DMX_PORT_IN)
+    {
+        snprintf(tmp, sizeof(tmp), "Mode: %s", CFG_DmxPortName(dmx_port_mode));
+        LCD_PutStr(0, 3, tmp);
+        s_home.mode = 0xFF;
+    }
+    else if (dmx_mode == 3)
 	{
 		// Auto: aggiorna anche quando cambia il protocollo attivo runtime
 		if ((s_home.mode != dmx_mode) || (s_home.active_proto != active_proto))
@@ -509,17 +517,30 @@ static void render_page_mode(void)
     LCD_PutStr(0, 7, g_ui.editing ? "Click=Save" : "Long=Back");
 }
 
+static cfg_parameter_t UI_DmxParameter(void)
+{
+    if (s_dmx_sel == 0) return CFG_DMX_ADDRESS;
+    if (s_dmx_sel == 1) return CFG_DMX_PORT_MODE;
+    return dmx_port_mode == DMX_PORT_ARTNET_NODE ? CFG_ARTNET_UNIVERSE : CFG_SACN_UNIVERSE;
+}
+
 static void render_page_dmx(void)
 {
     LCD_PutStrCentered(0, "DMX");
-
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%c Address [%03u]",
-             (g_ui.editing ? '>' : '>'),
-             (unsigned)dmx_address);
-    LCD_PutStr(0, 2, buf);
-
-    LCD_EditMarker(2, g_ui.editing);
+    char line[32];
+    for (unsigned i = 0; i < 3; ++i)
+    {
+        uint32_t value = i == 0 ? dmx_address : i == 1 ? dmx_port_mode :
+                         dmx_port_mode == DMX_PORT_ARTNET_NODE ? artnet_universe : sacn_universe;
+        if (g_ui.editing && i == s_dmx_sel) value = s_dmx_edit_value;
+        char cursor = s_dmx_sel == i ? '>' : ' ';
+        if (i == 0) snprintf(line, sizeof line, "%c Address [%03u]", cursor, (unsigned)value);
+        else if (i == 1) snprintf(line, sizeof line, "%c %s", cursor, CFG_DmxPortName(value));
+        else if (dmx_port_mode == DMX_PORT_IN) snprintf(line, sizeof line, "%c Universe [--]", cursor);
+        else snprintf(line, sizeof line, "%c Universe [%u]", cursor, (unsigned)value);
+        LCD_PutStr(0, (uint8_t)(2 + i), line);
+        LCD_EditMarker((uint8_t)(2 + i), g_ui.editing && s_dmx_sel == i);
+    }
     LCD_PutStr(0, 7, g_ui.editing ? "Click=Save" : "Long=Back");
 }
 
@@ -826,63 +847,55 @@ static void handle_page_mode_event(ui_event_t ev)
     }
 }
 
+/* Candidato locale: uscita senza conferma non cambia direzione o universo. */
 static void handle_page_dmx_event(ui_event_t ev)
 {
-    switch (ev)
+    if (ev == EVT_ENC_LEFT || ev == EVT_ENC_RIGHT)
     {
-        case EVT_ENC_LEFT:
+        if (!g_ui.editing)
         {
-            if (g_ui.editing && dmx_address > 1)
-            {
-                dmx_address--;
-            }
-        } break;
-
-        case EVT_ENC_RIGHT:
+            s_dmx_sel = (uint8_t)((s_dmx_sel + (ev == EVT_ENC_RIGHT ? 1 : 2)) % 3);
+        }
+        else
         {
-            if (g_ui.editing && dmx_address < 512)
-            {
-                dmx_address++;
-            }
-        } break;
-
-        case EVT_BTN_SHORT:
+            uint32_t minimum = s_dmx_sel == 0 ? 1 : s_dmx_sel == 2 && dmx_port_mode == DMX_PORT_SACN_NODE ? 1 : 0;
+            uint32_t maximum = s_dmx_sel == 0 ? 512 : s_dmx_sel == 1 ? 2 :
+                               dmx_port_mode == DMX_PORT_ARTNET_NODE ? 32767 : 63999;
+            if (ev == EVT_ENC_LEFT && s_dmx_edit_value > minimum) --s_dmx_edit_value;
+            if (ev == EVT_ENC_RIGHT && s_dmx_edit_value < maximum) ++s_dmx_edit_value;
+        }
+        g_ui.force_redraw = true;
+    }
+    else if (ev == EVT_BTN_SHORT)
+    {
+        if (s_dmx_sel == 2 && dmx_port_mode == DMX_PORT_IN) return;
+        if (!g_ui.editing)
         {
-            if (!g_ui.editing)
-            {
-                // Entra in edit (marker)
-                g_ui.editing = true;
-                LCD_EditMarker(2, true);
-                LCD_DrawToast("Edit: rotate, click=save");
-            }
-            else
-            {
-                // Conferma e salva SUBITO in EEPROM
-                if (dmx_address < 1)   dmx_address = 1;
-                if (dmx_address > 512) dmx_address = 512;
-                if (EE_WriteU16(EE_OFFS_DMX_ADDR, dmx_address) != HAL_OK) { LCD_DrawToast("EEPROM error"); return; }
-                LCD_EditMarker(2, false);
-                g_ui.editing = false;
-                LCD_DrawToast("Saved");
-            }
-        } break;
-
-        case EVT_BTN_LONG:
+            CFG_GetValue(UI_DmxParameter(), &s_dmx_edit_value);
+            g_ui.editing = true;
+        }
+        else
         {
-            // Back veloce --> Menu
-            g_ui.state = UI_MENU;
-            g_ui.force_redraw = true;
+            cfg_parameter_t parameter = UI_DmxParameter();
+            uint32_t previous;
+            CFG_GetValue(parameter, &previous);
+            if (!CFG_SetValue(parameter, s_dmx_edit_value)) return;
+            if (EE_SaveConfig() != HAL_OK)
+            {
+                (void)CFG_SetValue(parameter, previous);
+                LCD_DrawToast("EEPROM error");
+                return;
+            }
             g_ui.editing = false;
-        } break;
-
-        case EVT_IDLE_TIMEOUT:
-        {
-            g_ui.state = UI_HOME;
-            g_ui.force_redraw = true;
-            g_ui.editing = false;
-        } break;
-
-        default: break;
+            LCD_DrawToast("Saved");
+        }
+        g_ui.force_redraw = true;
+    }
+    else if (ev == EVT_BTN_LONG || ev == EVT_IDLE_TIMEOUT)
+    {
+        g_ui.editing = false;
+        g_ui.state = ev == EVT_IDLE_TIMEOUT ? UI_HOME : UI_MENU;
+        g_ui.force_redraw = true;
     }
 }
 

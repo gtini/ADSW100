@@ -367,3 +367,95 @@ bool apply_config_vars(uint8_t dmx_mode_in, uint16_t universe_in,
     NET_ScheduleApply();
     return true;
 }
+
+const char *CFG_DmxPortName(uint8_t mode)
+{
+    static const char *const names[] = {"IN", "ArtNet Node", "sACN Node"};
+    return mode <= DMX_PORT_SACN_NODE ? names[mode] : "Invalid";
+}
+
+bool CFG_GetValue(cfg_parameter_t parameter, uint32_t *value)
+{
+    if (!value) return false;
+    switch (parameter)
+    {
+        case CFG_DMX_ADDRESS: *value = dmx_address; break;
+        case CFG_DMX_PORT_MODE: *value = dmx_port_mode; break;
+        case CFG_SOURCE_MODE: *value = dmx_mode; break;
+        case CFG_ARTNET_UNIVERSE: *value = artnet_universe; break;
+        case CFG_SACN_UNIVERSE: *value = sacn_universe; break;
+        case CFG_SACN_TRANSPORT: *value = sacn_transport; break;
+        case CFG_SACN_PRIORITY: *value = sacn_min_prio; break;
+        case CFG_AUTO_PRIORITY: *value = proto_priority; break;
+        case CFG_DISPLAY_AUTO_OFF: *value = lcd_backlight == 0; break;
+        case CFG_OFF_TIME: *value = off_timeout_s; break;
+        case CFG_USE_DHCP: *value = use_dhcp; break;
+        case CFG_IP: *value = ip_address; break;
+        case CFG_MASK: *value = net_mask; break;
+        case CFG_GATEWAY: *value = gateway; break;
+        case CFG_DNS1: *value = dns1; break;
+        case CFG_DNS2: *value = dns2; break;
+        default: return false;
+    }
+    return true;
+}
+
+/* Validazione pura, condivisa anche dai SET rete RDM in attesa di APPLY. */
+bool CFG_ValidateValue(cfg_parameter_t parameter, uint32_t value)
+{
+    switch (parameter)
+    {
+        case CFG_DMX_ADDRESS: return value >= 1 && value <= 512;
+        case CFG_DMX_PORT_MODE: return value <= 2;
+        case CFG_SOURCE_MODE: return value <= 3;
+        case CFG_ARTNET_UNIVERSE: return value <= 32767;
+        case CFG_SACN_UNIVERSE: return value >= 1 && value <= 63999;
+        case CFG_SACN_TRANSPORT:
+        case CFG_DISPLAY_AUTO_OFF:
+        case CFG_USE_DHCP: return value <= 1;
+        case CFG_SACN_PRIORITY: return value <= 200;
+        case CFG_AUTO_PRIORITY: return value <= 5;
+        case CFG_OFF_TIME: return value <= 30;
+        case CFG_IP:
+        case CFG_GATEWAY:
+        case CFG_DNS1:
+        case CFG_DNS2:
+        {
+            uint32_t host = lwip_ntohl(value), first = host >> 24;
+            return host == 0 || (first > 0 && first != 127 && first < 224);
+        }
+        case CFG_MASK:
+        {
+            uint32_t inv = ~lwip_ntohl(value);
+            return !(inv & (inv + 1u));
+        }
+        default: return false;
+    }
+}
+
+bool CFG_SetValue(cfg_parameter_t parameter, uint32_t value)
+{
+    if (!CFG_ValidateValue(parameter, value)) return false;
+    switch (parameter)
+    {
+        case CFG_DMX_ADDRESS: dmx_address = value; break;
+        case CFG_DMX_PORT_MODE: dmx_port_mode = value; break;
+        case CFG_SOURCE_MODE: dmx_mode = value; break;
+        case CFG_ARTNET_UNIVERSE: artnet_universe = value; break;
+        case CFG_SACN_UNIVERSE: sacn_universe = value; break;
+        case CFG_SACN_TRANSPORT: sacn_transport = value; break;
+        case CFG_SACN_PRIORITY: sacn_min_prio = value; break;
+        case CFG_AUTO_PRIORITY: proto_priority = value; break;
+        case CFG_DISPLAY_AUTO_OFF: lcd_backlight = value ? 0 : 1; break;
+        case CFG_OFF_TIME: off_timeout_s = value; break;
+        case CFG_USE_DHCP: use_dhcp = value; break;
+        case CFG_IP: ip_address = value; break;
+        case CFG_MASK: net_mask = value; break;
+        case CFG_GATEWAY: gateway = value; break;
+        case CFG_DNS1: dns1 = value; break;
+        case CFG_DNS2: dns2 = value; break;
+        default: return false;
+    }
+    NET_ScheduleApply();
+    return true;
+}
