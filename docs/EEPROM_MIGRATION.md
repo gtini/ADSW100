@@ -21,6 +21,8 @@ Le sezioni successive conservano l’analisi legacy e la precedente implementazi
 
 La successiva correzione dei reset Node e degli interrupt TX/RDM non cambia mappa, versione struttura, migrazione o contenuto EEPROM. La nuova query CDC `rdm?` è esclusivamente diagnostica e non effettua accessi I²C né scritture di configurazione. Non cancellare EEPROM per provare questa correzione.
 
+Aggiornamento15 novembre2026: la correzione RDM Node/PID rete non cambia versione3, mappa o migrazione. APPLY e SET gateway/DNS pubblicano ora i parametri comuni solo dopo il TC ACK; save aggregato dopo250 ms senza transazione RX/TX. Nessun nuovo parametro EEPROM. Statico e DHCP usano il solo selettore legacy: per abilitare DHCP da statico, inviare STATIC_ADDRESS=0/prefix0, DHCP_MODE=1, APPLY; la combinazione statica non nulla/DHCP attivo è rifiutata con NACK000B senza perdere i candidati. Verificati round-trip EEPROM di IP/mask/gateway/DNS non predefiniti e DHCP, restano power-cut fisici. Dettagli in AUDIT.md.
+
 ### Migrazione e recovery attuali
 
 1. EE_LoadConfig legge 0x00..26, verifica esito I²C, magic e payload/range prima di ogni eventuale scrittura. Classificazione attraverso versione **insieme** ai tag brand/policy; nessuna deduzione dal solo byte 02.

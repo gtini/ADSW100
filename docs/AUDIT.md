@@ -2,6 +2,70 @@
 
 Data: 14 novembre 2026. Audit iniziale statico, seguito dagli incrementi e test documentati sotto. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nella prima analisi non erano state eseguite compilazioni o misure hardware. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
 
+## Correzione transazioni RDM Node e PID rete — 15 novembre 2026
+
+Base corrente `b0b9020` (RDM/Node e correzioni precedenti). L’utente conferma funzionamento e test hardware di RDM e Art-Net/sACN Node; segnala ancora GET intermittenti e SET non completati in Node e PID IP non visibili. Questa correzione è verificata da test host/build, **non ancora collaudata sulla scheda**. Le sezioni storiche successive mantengono le evidenze delle fasi precedenti.
+
+### Cause e topologia
+
+| Evidenza | File/funzioni | Conseguenza / correzione |
+| --- | --- | --- |
+| Lacuna confermata, alta | dmx_512.c NodeTryStart / ricevitore | Il TX controllava attività recente (30 ms), pacchetto pronto e lease controller, senza proprietà esplicita dal BREAK a fine transazione; mancavano BUSY USART e timeout del ricevitore. Aggiunta macchina RX distinta dalle fasi TX e acquisizione protetta; il solo silenzio non vale come completamento. La ripartenza prematura è un rischio del codice, non una causa esclusiva già provata dei sintomi sul banco. |
+| Race confermata, alta | DMX512_Service / DMX512_SendPacket | Copia pending→main lasciava una finestra senza proprietario; un nuovo BREAK poteva essere perso/rimpiazzato dalla gestione della richiesta precedente. Ora PROCESSING conserva il bus, un nuovo RX prevale sulla vecchia risposta; verifica BUSY/RXNE/errori prima del claim. Cambio ruolo ricontrollato con IRQ mascherati e non impedisce il servizio del GET immediatamente successivo. |
+| Applicazione anticipata confermata, alta | rdm.c RDM_Receive / INTERFACE_APPLY_CONFIGURATION, gateway, DNS | I setter potevano pubblicare le modifiche rete prima del TC ACK; ora lavoro transitorio RAM completato solo dopo TC verificato. Timeout TX annulla il lavoro e conserva i candidati per retry; un futuro TC DMX non può validare l’ACK abortito. |
+| Formato errato confermato, medio | rdm.c PID 070A | SET gateway richiedeva erroneamente Interface ID=1. E1.37-2 richiede ID=0 con gateway; correzione anche per rimozione route (tutti zero) e GET senza route (ID0). Richiesta point-to-point non supportata: NACK ACTION_NOT_SUPPORTED. |
+| Timing a rischio, da misurare | TIM7_IRQHandler, discovery | HAL GPIO e attesa IRQ TXE fra DE e primo byte potevano superare 4 µs. Come URC01, AF preparata prima di DE e primo byte scritto subito in TDR; restanti byte TXE, rilascio DE solo al TC. Nessun frame attivo viene interrotto per rispondere a un controller. |
+| Presentazione controller confermata, medio | URC01/Core/Src/rdm_parameters.c | I PID 0700/03/05/06/09/0A/0B **erano già implementati e pubblicati** in ADSW100. Il catalogo standard URC01 esaminato non contiene i PID rete né i relativi editor strutturati; non basta annunciarli per far comparire un editor IPv4 su quel controller. Nessuna modifica a URC01; verificare con controller E1.37-2 o richieste raw correttamente formate. |
+
+Hardware invariato: PB14 TX, PB15 RX, PD8 DE/RE, USART1 250 kbit/s 8N2. Porta unica half-duplex: durante TX il ricevitore USART è disabilitato. Non può garantire rilevamento/cattura dei primi byte di un controller che inizi durante il nostro frame. ADSW100 Node e URC01 controller sulla stessa coppia RS485 costituiscono due sorgenti, non una topologia RDM con proprietario unico. La cessione passiva riduce la contesa dopo rilevamento; non è arbitraggio multi-master.
+
+Soluzione corretta per una linea con URC01 controller: ADSW100 in IN/responder. Per mantenere un’uscita Node continua e controllo RDM indipendente servono una porta separata o un gateway/controller proprietario della linea con gestione RDM coordinata. L’eventuale controllo via Ethernet è futuro, non implementato in questa fase. Nessuna risposta a costo di troncare il proprio frame DMX.
+
+### Stati e completamento
+
+| Stato RX | Ingresso / uscita verificabile |
+| --- | --- |
+| IDLE | Bus libero dalla transazione; restano guardie di linea e proprietà controller |
+| START_CODE | BREAK FE con dato0; aspetta SC, non riavvia DMX durante MAB |
+| RDM_RX | SC CC; accumulo massimo257 byte, fine esatta Message Length+2; checksum/PDL validati nel main |
+| DMX_RX | SC0; protegge il frame fisico fino a 512 slot, prossimo BREAK o timeout |
+| RDM_PENDING / PROCESSING | Pacchetto completo e copia main protetti; nessun TX autonomo, nessun salvataggio EEPROM |
+| RDM_REPLY | Turnaround, BREAK/MAB o discovery, TXE; rilascio proprietà solo al vero TC dell’ultimo slot o watchdog guasto |
+| OTHER_REPLY | Richiesta senza nostra risposta: ascolto di un altro responder; risposta normale completa o timeout di sicurezza |
+
+La ricezione di errore UART/lunghezza impossibile libera lo stato; nuovo BREAK può iniziare un nuovo pacchetto. Watchdog RX: circa2,2 ms tra byte RDM (slot incluso), 35 ms dal SC per pacchetto, 2002 ms attesa SC per BREAK/MAB estesi, 1252 ms per DMX incompleto, 6 ms per risposta altrui non iniziata/completata. Sono limiti di recupero, **non finestre usate per decidere il normale completamento**. Il pacchetto pending non servito entro1,8 ms scade senza mantenere bloccato il Node indefinitamente.
+
+Guardia E1.20: budget main1,8 ms, turnaround nominale200 µs dal timestamp RXNE (margine sul minimo176 µs e massimo2 ms); BREAK176 µs, MAB16 µs. La temporizzazione residua viene ricalcolata dopo copia TX. RXNE può precedere il secondo stop bit: il margine resta da misurare sulla scheda. Nessuna HAL_Delay o attesa bloccante nel coordinamento.
+
+La presenza controller resta distinta dalla transazione: come DRV_STG4, attività RX recente rinvia il TX, DMX completo o RDM valido confermano un altro controller e rinnovano il lease di silenzio2 s. Il TC conclude la transazione; il lease evita di contendere immediatamente il bus al controller ancora attivo. Finestre Node2/20 ms, avvio2 s, cache50 ms e parser/arbitraggio Art-Net/sACN invariati. Il lease può sospendere il refresh autonomo: è cessione del bus a un’altra sorgente, non refresh garantito con due controller.
+
+Confronti: DRV_STG4 `dmx.c` (Claim, rx_guard, ExpireReceiver, ControllerFrame, TC); URC01 `rdm_device_phy.c` (lock, deadline1800 µs, separazione TXE/TC, DE→TDR discovery); RSH7 `rdm.c` (buffer/framing e proxy, non importati router o scanner). Requisiti timing dal [testo E1.20-2010, §3.2](https://getdlight.com/media/kunena/attachments/42/ANSI_E1-20_2010.pdf); confronto con audit timing2025 già presente nel riferimento RSH7. Nessuna dichiarazione di certificazione complessiva o misura fisica dell’incremento.
+
+### PID rete verificati e procedura
+
+E1.37-2 pubblicata2015: [specifica primaria ESTA](https://tsp.esta.org/tsp/documents/docs/ESTA_E1-37-2_2015.pdf), §3.5, §4.1–4.12 e tabella A-1. I soli complementari condizionatamente obbligatori, LIST_INTERFACES e APPLY se si supportano SET DHCP/statico, sono già presenti. Confermati anche opzionali INTERFACE_LABEL0701 e HARDWARE_ADDRESS_TYPE1 0702. Non pubblicati Zeroconf/renew/release/hostname/domain che il firmware non implementa.
+
+- 0700 GET PDL0 → lista ID interfaccia uint32 BE + tipo ARP uint16 BE; Ethernet ID1, tipo1.
+- 0701/0702 GET ID4 → ID4 + label8 / MAC6.
+- 0703 GET ID4 → ID4+bool; SET ID4+bool, valore0/1.
+- 0705 GET ID4 → ID4+IPv4(4)+prefix(1)+stato DHCP(1), dal netif runtime.
+- 0706 GET ID4 → ID4+IPv4(4)+prefix(1); SET identico9 byte, prefix0..32. In DHCP senza candidato, GET statico restituisce indirizzo/prefix zero; il vecchio IP ricordato nel payload legacy non viene cancellato implicitamente.
+- 0709 SET ID4, ACK PDL0. DHCP/statico restano candidati RAM fino ad APPLY; pubblicazione con setter condivisi dopo il TC dell’ACK.
+- 070A GET PDL0 → ID4+gateway4; SET ID0+gateway4, dopo TC. Route assente: entrambi zero. Ethernet point-to-point non disponibile (NACK000B); ID non valido NACK0006.
+- 070B GET indice1 → indice+IPv4(4); SET5 byte, dopo TC. Due server legacy, indici0/1; terzo server non supportato, NACK0006.
+
+Rifiuto PDL errato con FORMAT_ERROR0001; range/ID invalidi DATA_OUT_OF_RANGE0006; classe non supportata0005. IPv4 in ordine rete sul filo e rappresentazione lwIP/EEPROM legacy conservata; le sole copie aggiunte sono candidati e lavoro ACK transitori RAM, non una seconda configurazione persistente. Configurazione gateway/DNS riutilizza i valori statici del pannello; con DHCP attivo i parametri forniti dal lease restano gestiti dal client DHCP esistente.
+
+L’unico selettore legacy DHCP/statico non rappresenta due preferenze indipendenti contemporaneamente: uno STATIC_ADDRESS non nullo seleziona statico dopo APPLY. Per passare a DHCP: SET STATIC_ADDRESS a0/prefix0, SET DHCP_MODE=1, SET APPLY, poi CURRENT_ADDRESS. APPLY con DHCP=1 e statico attivo non nullo restituisce ACTION_NOT_SUPPORTED000B conservando i candidati, senza reinterpretare EEPROM o inventare un flag nuovo. Questo è un limite esplicito del profilo implementato; non si dichiara copertura completa E1.37-2.
+
+Dopo TC, il primo GET completa la pubblicazione pendente prima di leggerla (anche senza un giro intermedio RDM_Task). CURRENT_ADDRESS descrive comunque il netif: DHCP può richiedere tempo per il lease. Save EEPROM aggregato dopo250 ms di quiete e solo senza transazione RX/TX attiva; niente EEPROM prima dell’ACK, niente nuove scritture ISR. Il salvataggio legacy resta sincrono nel main e può ritardare una richiesta che inizi durante I²C; non è stato convertito in una nuova struttura asincrona. Power-cut prima del save può perdere l’ultima modifica.
+
+### Prove effettive
+
+`python3 tests/test_stabilization.py`: dieci gruppi PASS. Nel gruppo NODE_RDM: 72 GET/SET consecutivi via ISR UART nei tre modi (36 SET/36 GET), SET→GET immediato; sei transazioni aggiuntive SET ruolo→GET prima della commutazione fisica; DMX Node prima/dopo; BREAK/SC protetti, timer durante pacchetto pending, TC come completamento; timeout/inter-byte, lunghezza impossibile, checksum errato, UART ORE, pending scaduto e nuovo BREAK prima del servizio main. Verificati annuncio di tutti i PID rete, PDL/byte order/NACK, staged statico/DHCP, ACK prima dell’applicazione, ACK abortito/retry e round-trip EEPROM statico non predefinito e DHCP.
+
+Build ARM completa: 150 unità C/ASM, nessun warning/errore; ELF/map/log in `/private/tmp/adsw100-rdm-transactions`. Comando `python3 tests/test_stabilization.py --arm-build /tmp/adsw100-rdm-transactions`. Simulazione non misura baud, jitter, slot, GPIO o simultaneità APB/NVIC. Restano prove hardware URC01 con GET/SET ripetuti, misura DE/RE/TC/turnaround e refresh, primo byte durante cessione bus, stress superloop/I²C e power-cut. Nessun commit/tag automatico, nessuna modifica ai firmware di riferimento.
+
 ## Incremento corrente — RDM e DMX Node (14 novembre 2026)
 
 Questa sezione aggiorna le evidenze storiche riportate sotto. Branding/EEPROM precedenti collaudati dall’utente e congelati in `1e71467`. Incremento corrente compilato e verificato con simulazione host; non programmato né misurato su hardware dall’agente. Nessun commit/tag effettuato.

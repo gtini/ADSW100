@@ -12,6 +12,52 @@ static uint32_t valid_requests, late_requests;
 static bool staged_dhcp, staged_static;
 static uint8_t next_dhcp;
 static uint32_t next_ip, next_mask;
+/* Un solo lavoro rete in volo: il controller deve attendere il TC della risposta.
+   I candidati E1.37-2 restano RAM; nessun nuovo campo persistente. */
+typedef struct
+{
+    uint8_t fields, dhcp;
+    uint32_t ip, mask, gateway, dns1, dns2;
+} network_job_t;
+enum
+{
+    NET_JOB_STATIC=1, NET_JOB_DHCP=2, NET_JOB_GATEWAY=4, NET_JOB_DNS1=8, NET_JOB_DNS2=16
+};
+static network_job_t network_job;
+static uint32_t network_job_tc, network_job_faults;
+static bool network_job_wait_tc;
+
+/* Main: pubblica soltanto dopo il TC effettivo, mai in ISR o durante il TX ACK.
+   Chiamata anche prima del prossimo GET per garantire SET seguito subito da GET. */
+static void CompleteNetworkJob(void)
+{
+    if (network_job.fields && network_job_wait_tc && DMX512_TxFailureCount() != network_job_faults)
+    {
+        /* Nessun TC valido per l'ACK abortito: mantieni i candidati per il retry. */
+        network_job.fields = 0;
+        return;
+    }
+    if (!network_job.fields || (network_job_wait_tc &&
+        (DMX512_TxBusy() || (int32_t)(DMX512_TxCompletionCount()-network_job_tc) < 0))) return;
+    if (network_job.fields & NET_JOB_STATIC)
+    {
+        (void)CFG_SetValue(CFG_IP, network_job.ip);
+        (void)CFG_SetValue(CFG_MASK, network_job.mask);
+        staged_static = false;
+    }
+    if (network_job.fields & NET_JOB_DHCP)
+    {
+        (void)CFG_SetValue(CFG_USE_DHCP, network_job.dhcp);
+        staged_dhcp = false;
+    }
+    if (network_job.fields & NET_JOB_GATEWAY) (void)CFG_SetValue(CFG_GATEWAY, network_job.gateway);
+    if (network_job.fields & NET_JOB_DNS1) (void)CFG_SetValue(CFG_DNS1, network_job.dns1);
+    if (network_job.fields & NET_JOB_DNS2) (void)CFG_SetValue(CFG_DNS2, network_job.dns2);
+    network_job.fields = 0;
+    save_pending = true;
+    changed_at = HAL_GetTick();
+}
+
 static char device_label[33]; /* Volatile: nessuna stringa aggiunta alla EEPROM. */
 static const uint16_t supported[] = {0x0050,
                                      0x0051,
@@ -98,6 +144,7 @@ void RDM_Init(void)
     enabled = muted = identify = save_pending = false;
     staged_dhcp = staged_static = false;
     valid_requests = late_requests = 0;
+    memset(&network_job, 0, sizeof network_job);
     memset(uid, 0, sizeof uid);
     if (EE_Read(0xFA, eui, 6) != HAL_OK)
         return;
@@ -135,12 +182,13 @@ bool RDM_SavePending(void)
 /* Memorizzazione differita: mai I2C durante il turnaround o in ISR. */
 void RDM_Task(void)
 {
+    CompleteNetworkJob();
     if (identify)
     {
         HAL_GPIO_WritePin(LCD_BL_GPIO_Port, LCD_BL_Pin,
                           (HAL_GetTick() / 250u) & 1u ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
-    if (save_pending && !DMX512_TxBusy() && HAL_GetTick() - changed_at >= 250u &&
+    if (save_pending && !DMX512_BusBusy() && HAL_GetTick() - changed_at >= 250u &&
         HAL_GetTick() - last_request_at >= 250u)
     {
         if (EE_SaveConfig() == HAL_OK)
@@ -154,7 +202,7 @@ void RDM_Task(void)
 }
 
 /* ACK/NACK normali conservano transaction, PID e sub-device del richiedente. */
-static void Reply(const uint8_t *q, const uint8_t *data, uint8_t count, uint8_t type, uint32_t end)
+static bool Reply(const uint8_t *q, const uint8_t *data, uint8_t count, uint8_t type, uint32_t end)
 {
     response[0] = 0xCC;
     response[1] = 1;
@@ -176,7 +224,7 @@ static void Reply(const uint8_t *q, const uint8_t *data, uint8_t count, uint8_t 
     for (unsigned i = 0; i < response[2]; ++i)
         sum += response[i];
     PutWord(response + response[2], sum);
-    (void)DMX512_SendPacket(response, response[2] + 2u, false, end);
+    return DMX512_SendPacket(response, response[2] + 2u, false, end);
 }
 
 static void Discovery(uint32_t end)
@@ -199,13 +247,14 @@ static void Discovery(uint32_t end)
 
 void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
 {
+    CompleteNetworkJob();
     if (!RDM_PacketValid(q, length))
         return;
     ++valid_requests;
     last_request_at = HAL_GetTick();
     DMX512_ObserveController(); /* Anche risposte altrui impediscono due sorgenti sulla linea. */
-    if (!enabled || DMX512_TxBusy()) return;
-    if (DMX512_Cycles() - end > 2000u * (SystemCoreClock / 1000000u))
+    if (!enabled || !DMX512_CanReply()) return;
+    if (DMX512_Cycles() - end > DMX_RDM_SERVICE_US * (SystemCoreClock / 1000000u))
     {
         ++late_requests;
         return;
@@ -239,6 +288,7 @@ void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
     uint8_t data[231] = {0}, n = 0;
     uint16_t nack = 0xFFFF;
     bool changed = false;
+    network_job_t job = {0};
     if (sub && !(set && sub == 0xFFFF))
         nack = 9;
     else if (pid >= PID_DMX_PORT_MODE && pid <= PID_RELAY_OFF_TIME)
@@ -407,9 +457,9 @@ void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
                 data[4] = staged_dhcp ? next_dhcp : use_dhcp;
             else
             {
-                uint32_t configured_ip = staged_static ? next_ip : ip_address;
+                uint32_t configured_ip = staged_static ? next_ip : use_dhcp ? 0 : ip_address;
                 memcpy(data + 4, &configured_ip, 4);
-                uint32_t m = lwip_ntohl(staged_static ? next_mask : net_mask);
+                uint32_t m = lwip_ntohl(staged_static ? next_mask : use_dhcp ? 0 : net_mask);
                 while (m & 0x80000000u)
                 {
                     ++data[8];
@@ -425,23 +475,30 @@ void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
             nack = 1;
         else if (pid == 0x070B && q[24] > 1)
             nack = 6;
-        else if (pid == 0x070A && set && Dword(q + 24) != 1)
-            nack = 6;
+        else if (pid == 0x070A && set && Dword(q + 24) != 0)
+        {
+            /* SET route con gateway richiede NO_DEFAULT_ROUTE (ID=0).
+               Ethernet non offre il routing point-to-point (ID=1, gateway=0). */
+            nack = Dword(q+24) == 1 && Dword(q+28) == 0 ? 0x000B : 6;
+        }
         else if (set)
         {
             uint32_t raw;
             memcpy(&raw, q + (pid == 0x070A ? 28 : 25), 4);
-            if (!CFG_SetValue(pid == 0x070A ? CFG_GATEWAY : q[24] ? CFG_DNS2 : CFG_DNS1, raw))
+            if (!CFG_ValidateValue(pid == 0x070A ? CFG_GATEWAY : q[24] ? CFG_DNS2 : CFG_DNS1, raw))
                 nack = 6;
             else
-                changed = true;
+            {
+                job.fields = pid == 0x070A ? NET_JOB_GATEWAY : q[24] ? NET_JOB_DNS2 : NET_JOB_DNS1;
+                job.gateway = job.dns1 = job.dns2 = raw;
+            }
         }
         else
         {
             n = size;
             if (pid == 0x070A)
             {
-                PutDword(data, 1);
+                PutDword(data, gateway ? 1 : 0);
                 memcpy(data + 4, &gateway, 4);
             }
             else
@@ -458,21 +515,33 @@ void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
             nack = 1;
         else if (Dword(q + 24) != 1)
             nack = 6;
+        else if (staged_dhcp && next_dhcp &&
+                 (staged_static ? next_ip != 0 : !use_dhcp && ip_address != 0))
+        {
+            /* Il legacy conserva un solo selettore: abilitazione DHCP + statico
+               attivo non sono rappresentabili insieme. Prima azzerare STATIC_ADDRESS. */
+            nack = 0x000B; /* NR_ACTION_NOT_SUPPORTED, candidati conservati. */
+        }
         else
         {
             if (staged_static)
             {
-                (void)CFG_SetValue(CFG_IP, next_ip);
-                (void)CFG_SetValue(CFG_MASK, next_mask);
-                changed = true;
+                job.fields |= NET_JOB_STATIC;
+                job.ip = next_ip;
+                job.mask = next_mask;
+                if (next_ip)
+                {
+                    /* E1.37-2: l'indirizzo statico non nullo precede DHCP. */
+                    job.fields |= NET_JOB_DHCP;
+                    job.dhcp = 0;
+                }
             }
             if (staged_dhcp)
             {
-                (void)CFG_SetValue(CFG_USE_DHCP, next_dhcp);
-                changed = true;
+                job.fields |= NET_JOB_DHCP;
+                job.dhcp = next_dhcp;
             }
-            staged_static = staged_dhcp = false;
-            NET_ScheduleApply();
+            /* Candidati cancellati solo dopo il TC valido e la pubblicazione. */
         }
     }
     else if (set)
@@ -573,13 +642,22 @@ void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
         save_pending = true;
         changed_at = HAL_GetTick();
     }
-    if (broadcast)
-        return;
-    if (nack != 0xFFFF)
+    uint32_t completion = DMX512_TxCompletionCount() + 1u;
+    bool accepted = broadcast;
+    if (!broadcast)
     {
-        PutWord(data, nack);
-        Reply(q, data, 2, 2, end);
+        if (nack != 0xFFFF)
+        {
+            PutWord(data, nack);
+            (void)Reply(q, data, 2, 2, end);
+        }
+        else accepted = Reply(q, data, n, 0, end);
     }
-    else
-        Reply(q, data, n, 0, end);
+    if (accepted && nack == 0xFFFF && job.fields)
+    {
+        network_job = job;
+        network_job_tc = completion;
+        network_job_faults = DMX512_TxFailureCount();
+        network_job_wait_tc = !broadcast;
+    }
 }

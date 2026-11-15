@@ -161,6 +161,7 @@ static struct {uint32_t CR1,ARR,CNT,EGR,SR,DIER,PSC;} tim7_registers;
 #define __DSB() ((void)0)
 #define TIM_CR1_OPM 8u
 #define TIM_CR1_CEN 1u
+#define USART_ISR_BUSY 128u
 #define USART_CR1_RE 16u
 #define USART_ISR_TXE_TXFNF 32u
 #define USART_ISR_TC 16u
@@ -194,6 +195,7 @@ static void HAL_NVIC_ClearPendingIRQ(int irq) {(void)irq;++timer_pending_clears;
 static void HAL_NVIC_EnableIRQ(int irq) {(void)irq;}
 #ifdef DMX_TEST
 static void RdmTestReceive(const uint8_t *q,uint16_t n,uint32_t end) {(void)q;(void)n;(void)end;}
+#define RDM_PacketValid(q,n) (false)
 #define RDM_Receive RdmTestReceive
 uint16_t ArtNet_GetSlotsView(uint16_t u,const uint8_t **p) {(void)u;*p=NULL;return 0;}
 uint16_t sACN_GetSlotsView(uint16_t u,const uint8_t **p) {(void)u;*p=NULL;return 0;}
@@ -288,7 +290,7 @@ int main(void) {
 DMX = r'''
 static UART_Registers registers;
 static UART_HandleTypeDef uart={.Instance=&registers};
-static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);}
+static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);registers.ISR&=~USART_ISR_RXNE_RXFNE;}
 int main(void) {
  InitDMX512(&uart);tick=10;receive(USART_ISR_FE,0);receive(8,0);receive(8,200);receive(8,210);
  assert(dmxRxBuffer[0]==0);receive(USART_ISR_FE,0);DMX512_Service();assert(dmxRxCount==2 && dmxRxBuffer[0]==200 && dmx_timeout==1000);
@@ -515,7 +517,7 @@ static UART_HandleTypeDef uart={.Instance=&registers};
 static uint64_t time_us;
 static void advance_us(unsigned us) {time_us+=us;DWT->CYCCNT=(uint32_t)(time_us*480u);tick=(uint32_t)(time_us/1000);}
 static void timer(void) {unsigned period=TIM7->ARR+1;advance_us(period);TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();}
-static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);}
+static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);registers.ISR&=~USART_ISR_RXNE_RXFNE;}
 static void finish_tx(void) {
  unsigned guard=0;
  while(tx_state && tx_state!=3 && ++guard<10) timer();assert(tx_state==3);
@@ -531,7 +533,12 @@ static unsigned build(unsigned pid,unsigned cc,const uint8_t *payload,unsigned c
  uint16_t sum=0;for(unsigned i=0;i<request[2];i++)sum+=request[i];PutWord(request+request[2],sum);return request[2]+2;
 }
 static void transact(unsigned pid,unsigned cc,const uint8_t *payload,unsigned count) {
- unsigned n=build(pid,cc,payload,count,false);RDM_Receive(request,n,DMX512_Cycles());assert(tx_state);finish_tx();assert(RDM_PacketValid(tx_data,tx_count));
+ unsigned n=build(pid,cc,payload,count,false);RDM_Receive(request,n,DMX512_Cycles());assert(tx_state);finish_tx();RDM_Task();assert(RDM_PacketValid(tx_data,tx_count));
+}
+static void wire_transact(unsigned pid,unsigned cc,const uint8_t *payload,unsigned count) {
+ unsigned length=build(pid,cc,payload,count,false);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<length;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);}
+ DMX512_Service();assert(tx_state);finish_tx();assert(RDM_PacketValid(tx_data,tx_count));
 }
 int main(void) {
  memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
@@ -542,7 +549,7 @@ int main(void) {
  uint8_t probe[2]={0xFE,0xAA};assert(DMX512_SendPacket(probe,2,true,DMX512_Cycles()));
  assert((TIM7->CR1&TIM_CR1_URS) && timer_pending_clears);
  TIM7_IRQHandler();assert(tx_state==5 && TIM7->ARR==199);
- timer();assert(tx_state==3);
+ timer();assert(tx_state==3 && tx_index==1 && registers.TDR==0xFE);
  receive(USART_ISR_FE|USART_ISR_NE|USART_ISR_ORE,0);
  assert(!(registers.ISR&(USART_ISR_FE|USART_ISR_NE|USART_ISR_ORE)) && tx_state==3);
  finish_tx();assert(!TIM7->DIER && !(TIM7->CR1&TIM_CR1_CEN));
@@ -583,7 +590,7 @@ int main(void) {
  transact(0x0709,0x30,net,4);assert(tx_data[16]==0 && (ip_address&255)==192 && net_mask==0x00FFFFFF);
  transact(0x0700,0x20,NULL,0);assert(Word(tx_data+28)==1);
  transact(0x0705,0x20,net,4);assert(tx_data[23]==10 && tx_data[33]==0);
- uint8_t dhcp_off[5]={0,0,0,1,0};assert(use_dhcp==1);transact(0x0703,0x30,dhcp_off,5);assert(use_dhcp==1);
+ uint8_t dhcp_off[5]={0,0,0,1,0};assert(use_dhcp==0);transact(0x0703,0x30,dhcp_off,5);assert(use_dhcp==0);
  transact(0x0703,0x20,dhcp_off,4);assert(tx_data[28]==0);
  transact(0x0709,0x30,dhcp_off,4);assert(use_dhcp==0);
  uint32_t before_ip=ip_address;net[8]=33;transact(0x0706,0x30,net,9);assert(tx_data[16]==2 && ip_address==before_ip);
@@ -608,7 +615,7 @@ int main(void) {
  /* Ritorno IN senza reset; dati completi, nessun echo del proprio TX. */
  assert(CFG_SetValue(CFG_DMX_PORT_MODE,0));DMX512_Service();assert(applied_port==0 && !(coils&RDM_DIR_Pin));
  receive(USART_ISR_FE,0);receive(8,0);receive(8,222);receive(8,12);receive(USART_ISR_FE,0);DMX512_Service();assert(dmxRxCount==2 && dmxRxBuffer[0]==222 && dmxRxBuffer[2]==0);
- advance_us(300000);RDM_Task();assert(!RDM_SavePending());assert(EE_LoadConfig()==HAL_OK && dmx_address==1);
+ advance_us(2100000);DMX512_Service();RDM_Task();assert(!RDM_SavePending());assert(EE_LoadConfig()==HAL_OK && dmx_address==1);
  /* Migrazione v2 -> v3: ignora il precedente byte 0x27, conserva identità e dmx_mode. */
  dmx_mode=3;assert(EE_SaveConfig()==HAL_OK);uint8_t saved[256];memcpy(saved,memory,256);saved[2]=2;saved[0x27]=0xB2;
  for(int cut=0;cut<30;cut++) {
@@ -620,8 +627,84 @@ int main(void) {
  assert(CFG_SetValue(CFG_DMX_PORT_MODE,2));assert(EE_SaveConfig()==HAL_OK);dmx_port_mode=0;assert(EE_LoadConfig()==HAL_OK && dmx_port_mode==2);
  memory[0x27]=0xB3;assert(EE_LoadConfig()==HAL_ERROR);memory[0x27]=0xB0;
  /* TX guasto non lascia il driver abilitato senza limite. */
- dmx_port_mode=1;DMX512_Service();advance_us(2100000);DMX512_Service();timer();timer();timer();assert(tx_state==3);
+ dmx_port_mode=1;DMX512_Service();advance_us(2100000);DMX512_Service();advance_us(2100000);DMX512_Service();timer();timer();timer();assert(tx_state==3);
  timer();assert(tx_state==0 && !(coils&RDM_DIR_Pin) && tx_faults);
+
+ /* GET/SET reali dal framing UART, consecutivi, in IN e in entrambi i Node. */
+ for(unsigned mode=0;mode<3;mode++) {
+  InitDMX512(&uart);assert(CFG_SetValue(CFG_DMX_PORT_MODE,mode));DMX512_Service();
+  if(mode){advance_us(2100000);DMX512_Service();timer();finish_tx();}
+  for(unsigned k=0;k<24;k++) {
+   uint8_t a[2]={0,(uint8_t)(20+k)};bool setting=(k&1)==0;
+   n=build(0x00F0,setting?0x30:0x20,setting?a:NULL,setting?2:0,false);
+   advance_us(200);receive(USART_ISR_FE,0);assert(bus_state==BUS_START_CODE);
+   if(mode && k==0){advance_us(40000);timer();assert(!tx_state && bus_state==BUS_START_CODE);}
+   for(unsigned i=0;i<n;i++) {
+    advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);
+    if(mode && k==0 && i==0){timer();assert(!tx_state && bus_state==BUS_RDM_RX);}
+   }
+   assert(bus_state==BUS_RDM_PENDING && rdm_ready);
+   if(mode){TIM7->ARR=499;timer();assert(!tx_state && bus_state==BUS_RDM_PENDING);}
+   DMX512_Service();assert(tx_state && bus_state==BUS_RDM_REPLY);
+   unsigned before_writes=writes;RDM_Task();assert(writes==before_writes);
+   finish_tx();assert(bus_state==BUS_IDLE && !DMX512_TxBusy());
+   assert(RDM_PacketValid(tx_data,tx_count) && tx_data[16]==0 && tx_data[20]==(setting?0x31:0x21));
+   if(!setting)assert(Word(tx_data+24)==19+k); /* GET subito dopo il SET precedente. */
+  }
+  if(mode){advance_us(2100000);DMX512_Service();timer();assert(tx_state==1);finish_tx();assert(tx_count==513 && tx_data[0]==0);}
+ }
+ /* SET ruolo seguito dal GET prima del cambio hardware: il pacchetto non va scartato. */
+ for(unsigned mode=0;mode<3;mode++) {
+  uint8_t next_mode=mode;wire_transact(PID_DMX_PORT_MODE,0x30,&next_mode,1);assert(tx_data[16]==0);
+  wire_transact(PID_DMX_PORT_MODE,0x20,NULL,0);assert(tx_data[16]==0 && tx_data[24]==mode);
+  DMX512_Service();assert(applied_port==mode);
+ }
+ /* Recupero RX incompleto, lunghezza errata, checksum e errori UART, senza TX a metà. */
+ receive(USART_ISR_FE,0);receive(USART_ISR_RXNE_RXFNE,0xCC);receive(USART_ISR_RXNE_RXFNE,1);
+ assert(bus_state==BUS_RDM_RX);advance_us(2300);timer();assert(bus_state==BUS_IDLE && !tx_state);
+ receive(USART_ISR_FE,0);receive(8,0xCC);receive(8,1);receive(8,1);assert(bus_state==BUS_IDLE);
+ receive(USART_ISR_FE,0);receive(8,0xCC);receive(USART_ISR_ORE,0);assert(bus_state==BUS_IDLE && !tx_state);
+ n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ assert(rdm_ready);advance_us(2100);timer();assert(!rdm_ready && bus_state==BUS_IDLE);
+ /* Un nuovo BREAK dopo un pacchetto pendente non permette la vecchia risposta. */
+ n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ receive(USART_ISR_FE,0);DMX512_Service();assert(!tx_state && bus_state==BUS_START_CODE);
+ receive(USART_ISR_ORE,0);assert(bus_state==BUS_IDLE);
+ /* I PID rete erano già annunciati: verifica l'elenco e i complementari. */
+ transact(0x0050,0x20,NULL,0);
+ for(unsigned pid=0x0700;pid<=0x070B;pid++)if(pid!=0x0704 && pid!=0x0707 && pid!=0x0708){bool found=false;for(unsigned i=0;i<tx_data[23];i+=2)if(Word(tx_data+24+i)==pid)found=true;assert(found);}
+ uint8_t iface[4]={0,0,0,1};transact(0x0701,0x20,iface,4);assert(tx_data[23]==12);
+ transact(0x0702,0x20,iface,4);assert(tx_data[23]==10 && memcmp(tx_data+28,gnetif.hwaddr,6)==0);
+ uint8_t static2[9]={0,0,0,1,10,45,67,89,20};transact(0x0706,0x30,static2,9);
+ uint32_t prior_ip=ip_address;n=build(0x0709,0x30,iface,4,false);RDM_Receive(request,n,DMX512_Cycles());assert(tx_state);
+ RDM_Task();assert(ip_address==prior_ip && network_job.fields);finish_tx();assert(ip_address==prior_ip);
+ /* Il GET immediato completa prima il lavoro ACK precedente, senza I2C. */
+ transact(0x0706,0x20,iface,4);assert(memcmp(tx_data+28,static2+4,5)==0 && ip_address!=prior_ip && net_mask==lwip_htonl(0xFFFFF000u));
+ uint8_t no_route[8]={0};transact(0x070A,0x30,no_route,8);transact(0x070A,0x20,NULL,0);assert(!memcmp(tx_data+24,no_route,8));
+ no_route[3]=1;transact(0x070A,0x30,no_route,8);assert(tx_data[16]==2 && Word(tx_data+24)==0xB);
+ uint8_t route[8]={0,0,0,0,10,45,64,1};uint32_t prior_gateway=gateway;
+ n=build(0x070A,0x30,route,8,false);RDM_Receive(request,n,DMX512_Cycles());RDM_Task();assert(gateway==prior_gateway);finish_tx();
+ transact(0x070A,0x20,NULL,0);assert(tx_data[23]==8 && Dword(tx_data+24)==1 && !memcmp(tx_data+28,route+4,4));
+ for(unsigned index=0;index<2;index++){uint8_t server[5]={(uint8_t)index,9,9,9,(uint8_t)(9+index)};transact(0x070B,0x30,server,5);transact(0x070B,0x20,server,1);assert(!memcmp(tx_data+24,server,5));}
+ /* Round-trip EEPROM della configurazione statica non predefinita. */
+ advance_us(300000);RDM_Task();assert(!RDM_SavePending());
+ uint32_t saved_ip=ip_address,saved_mask=net_mask,saved_gateway=gateway,saved_dns1=dns1,saved_dns2=dns2;
+ ip_address=net_mask=gateway=dns1=dns2=0;assert(EE_LoadConfig()==HAL_OK && !use_dhcp && ip_address==saved_ip && net_mask==saved_mask && gateway==saved_gateway && dns1==saved_dns1 && dns2==saved_dns2);
+ /* ACK abortito: nessuna modifica rete applicata usando il TC di un futuro DMX. */
+ uint8_t dhcp_on[5]={0,0,0,1,1};transact(0x0703,0x30,dhcp_on,5);assert(use_dhcp==0);
+ transact(0x0709,0x30,iface,4);assert(tx_data[16]==2 && Word(tx_data+24)==0xB && staged_dhcp);
+ uint8_t clear_static[9]={0,0,0,1,0,0,0,0,0};transact(0x0706,0x30,clear_static,9);
+ n=build(0x0709,0x30,iface,4,false);RDM_Receive(request,n,DMX512_Cycles());timer();timer();timer();assert(tx_state==3);timer();RDM_Task();assert(!tx_state && use_dhcp==0 && staged_dhcp && !network_job.fields);
+ transact(0x0709,0x30,iface,4);assert(use_dhcp==1 && !staged_dhcp);
+ uint8_t bad_iface[4]={0,0,0,2};transact(0x0705,0x20,bad_iface,4);assert(tx_data[16]==2 && Word(tx_data+24)==6);
+ dhcp_on[4]=2;transact(0x0703,0x30,dhcp_on,5);assert(tx_data[16]==2 && Word(tx_data+24)==6);
+ transact(0x0706,0x30,static2,8);assert(tx_data[16]==2 && Word(tx_data+24)==1);
+ transact(0x0700,0x30,NULL,0);assert(tx_data[16]==2 && Word(tx_data+24)==5);
+ advance_us(300000);RDM_Task();assert(!RDM_SavePending());
+ uint32_t keep_ip=ip_address,keep_gateway=gateway,keep_dns1=dns1,keep_dns2=dns2,keep_mask=net_mask;
+ assert(EE_LoadConfig()==HAL_OK && ip_address==keep_ip && gateway==keep_gateway && dns1==keep_dns1 && dns2==keep_dns2 && net_mask==keep_mask && use_dhcp==1);
  /* Un EUI non nel dominio noto disabilita soltanto RDM, mai UID di fallback. */
  char diagnostic[64];RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=1 uid=17FA:A3010203") && late_requests==1);
  memory[0xFA]=0xFF;RDM_Init();assert(!RDM_Enabled());RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=0 uid=0000:00000000 rx=0 late=0"));return 0;

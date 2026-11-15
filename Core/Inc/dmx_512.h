@@ -18,6 +18,8 @@ extern "C" {
 // costanti
 
 #define	DMX_ST_CODE		0U
+/* Margine su E1.20: SOP entro 2 ms; il main deve consegnare entro 1,8 ms. */
+#define DMX_RDM_SERVICE_US 1800u
 
 // tipo per dmxFlags
 
@@ -53,6 +55,11 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart);
 /* Main: acquisisce il TX condiviso senza attese, 1..513 byte; timestamp DWT fine richiesta. */
 bool DMX512_SendPacket(const uint8_t *data, uint16_t count, bool discovery, uint32_t request_end);
 bool DMX512_TxBusy(void);
+/* Main: proprietario RX/TX e contatore incrementato solo al vero TC (non timeout). */
+bool DMX512_BusBusy(void);
+bool DMX512_CanReply(void);
+uint32_t DMX512_TxCompletionCount(void);
+uint32_t DMX512_TxFailureCount(void);
 uint32_t DMX512_Cycles(void);
 void DMX512_ObserveController(void);
 

@@ -39,6 +39,69 @@ static uint16_t rdm_count;
 static uint32_t frame_start;
 static volatile uint32_t frames_sent, rdm_seen, tx_faults;
 
+/* Proprietà RX distinta dalle fasi TX: un timer periodico non può sottrarre
+   il bus a un pacchetto in corso o a una risposta non ancora terminata al TC. */
+typedef enum
+{
+    BUS_IDLE, BUS_START_CODE, BUS_RDM_RX, BUS_DMX_RX,
+    BUS_RDM_PENDING, BUS_RDM_PROCESSING, BUS_RDM_REPLY, BUS_OTHER_REPLY
+} bus_state_t;
+static volatile bus_state_t bus_state;
+static volatile uint32_t rx_started_at, rx_last_cycles, rx_started_cycles;
+#define RDM_INTERBYTE_US 2200u /* Slot 44 us + pausa RX ammessa 2100 us, margine ISR. */
+#define RDM_PACKET_US 35000u   /* Oltre il massimo nominale di 257 slot con pause medie 76 us. */
+
+static void ReceiverAbort(void)
+{
+    rx_index = -2;
+    rx_count = rdm_count = 0;
+    receiving_rdm = false;
+    bus_state = BUS_IDLE;
+}
+
+/* ISR TIM7 o sezione critica main. Il completamento normale viene da lunghezza
+   e checksum, poi TC; questi limiti servono solo a recuperare pacchetti interrotti. */
+static void ReceiverExpire(void)
+{
+    uint32_t now = HAL_GetTick();
+    uint32_t cycles = DWT->CYCCNT, per_us = SystemCoreClock / 1000000u;
+    if ((bus_state == BUS_START_CODE && now - rx_started_at > 2002u) ||
+        (bus_state == BUS_DMX_RX && now - rx_started_at > 1252u) ||
+        (bus_state == BUS_RDM_RX &&
+         (cycles - rx_last_cycles > RDM_INTERBYTE_US * per_us ||
+          cycles - rx_started_cycles > RDM_PACKET_US * per_us)) ||
+        ((bus_state == BUS_RDM_PENDING || bus_state == BUS_RDM_PROCESSING) &&
+         cycles - rdm_end > DMX_RDM_SERVICE_US * per_us) ||
+        (bus_state == BUS_OTHER_REPLY && now - rx_started_at >= 6u))
+    {
+        if (bus_state == BUS_RDM_PENDING) rdm_ready = false;
+        ReceiverAbort();
+    }
+}
+
+bool DMX512_CanReply(void)
+{
+    return port_uart && !tx_state && !rdm_ready &&
+           (bus_state == BUS_IDLE || bus_state == BUS_RDM_PROCESSING) &&
+           !(port_uart->Instance->ISR & (USART_ISR_BUSY | USART_ISR_RXNE_RXFNE |
+                                       USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE));
+}
+
+bool DMX512_BusBusy(void)
+{
+    return tx_state != 0 || bus_state != BUS_IDLE || rdm_ready;
+}
+
+uint32_t DMX512_TxFailureCount(void)
+{
+    return tx_faults;
+}
+
+uint32_t DMX512_TxCompletionCount(void)
+{
+    return frames_sent;
+}
+
 uint32_t DMX512_Cycles(void)
 {
     return DWT->CYCCNT;
@@ -91,6 +154,7 @@ static void ReceiveDirection(void)
     rx_index = -2;
     rx_count = rdm_count = 0;
     receiving_rdm = false;
+    bus_state = BUS_IDLE;
 }
 
 static void BeginBreak(void)
@@ -106,12 +170,13 @@ static void BeginBreak(void)
    Un controllore rilevato in RX sospende il TX autonomo per 2 s. */
 static void NodeTryStart(void)
 {
+    ReceiverExpire();
     uint32_t now = HAL_GetTick();
     if (applied_port == DMX_PORT_IN || applied_port > DMX_PORT_SACN_NODE) return;
-    if ((int32_t)(now - listen_until) < 0 || rdm_ready ||
+    if ((int32_t)(now - listen_until) < 0 || rdm_ready || bus_state != BUS_IDLE ||
         (rx_activity_seen && now - rx_activity_at < 30u) ||
         (controller_seen && now - controller_at < 2000u) ||
-        (port_uart->Instance->ISR & (USART_ISR_RXNE_RXFNE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)) ||
+        (port_uart->Instance->ISR & (USART_ISR_RXNE_RXFNE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE | USART_ISR_BUSY)) ||
         HAL_GPIO_ReadPin(RDM_RXD_GPIO_Port, RDM_RXD_Pin) == GPIO_PIN_RESET)
     {
         TimerArm(1000);
@@ -143,14 +208,15 @@ void TIM7_IRQHandler(void)
     else if (tx_state == 2 || tx_state == 5)
     {
         bool no_break = tx_state == 5;
-        if (no_break)
-        {
-            CLEAR_BIT(port_uart->Instance->CR1, USART_CR1_RE);
-            HAL_GPIO_WritePin(RDM_DIR_GPIO_Port, RDM_DIR_Pin, GPIO_PIN_SET);
-        }
+        if (no_break) CLEAR_BIT(port_uart->Instance->CR1, USART_CR1_RE);
+        /* Come URC01: prepara AF prima di DE. La discovery non può spendere
+           HAL_GPIO_Init o aspettare un altro IRQ tra DE e primo start bit (4 us). */
         TxPin(false, true);
         tx_state = 3;
         __HAL_UART_CLEAR_FLAG(port_uart, UART_CLEAR_TCF);
+        tx_index = 1;
+        if (no_break) HAL_GPIO_WritePin(RDM_DIR_GPIO_Port, RDM_DIR_Pin, GPIO_PIN_SET);
+        port_uart->Instance->TDR = tx_data[0];
         SET_BIT(port_uart->Instance->CR1, USART_CR1_TXEIE_TXFNFIE);
         TimerArm(30000); /* Sorveglianza TX: nessun DE lasciato alto per UART guasta. */
     }
@@ -175,10 +241,13 @@ bool DMX512_SendPacket(const uint8_t *data, uint16_t count, bool discovery, uint
 {
     uint32_t age = DMX512_Cycles() - request_end;
     uint32_t per_us = SystemCoreClock / 1000000u;
-    if (!port_uart || !data || !count || count > sizeof tx_data || age > 2000u * per_us) return false;
+    if (!port_uart || !data || !count || count > sizeof tx_data || age > DMX_RDM_SERVICE_US * per_us) return false;
     uint32_t key = __get_PRIMASK();
     __disable_irq();
-    if (tx_state || rdm_ready)
+    if (tx_state || rdm_ready ||
+        (bus_state != BUS_IDLE && bus_state != BUS_RDM_PROCESSING) ||
+        (port_uart->Instance->ISR & (USART_ISR_BUSY | USART_ISR_RXNE_RXFNE |
+                                     USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)))
     {
         __set_PRIMASK(key);
         return false;
@@ -186,8 +255,9 @@ bool DMX512_SendPacket(const uint8_t *data, uint16_t count, bool discovery, uint
     memcpy(tx_data, data, count);
     tx_count = count;
     tx_index = 0;
+    bus_state = BUS_RDM_REPLY;
     tx_state = discovery ? 5 : 6;
-    uint32_t elapsed = age / per_us;
+    uint32_t elapsed = (DMX512_Cycles() - request_end) / per_us;
     TimerArm((uint16_t)(elapsed < 200u ? 200u - elapsed : 1u));
     __set_PRIMASK(key);
     return true;
@@ -220,6 +290,7 @@ void InitDMX512(UART_HandleTypeDef *huart)
     tx_state = 0;
     rdm_ready = false;
     rx_activity_seen = controller_seen = false;
+    bus_state = BUS_IDLE;
     port_uart = huart;
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
@@ -269,14 +340,14 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
         __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_FEF | UART_CLEAR_NEF | UART_CLEAR_OREF);
         return;
     }
+    ReceiverExpire();
+    rx_last_cycles = DMX512_Cycles();
     rx_activity_seen = true;
     rx_activity_at = HAL_GetTick();
     if (flags & (USART_ISR_NE | USART_ISR_ORE))
     {
         __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_NEF | UART_CLEAR_OREF | UART_CLEAR_FEF);
-        rx_index = -2;
-        rx_count = rdm_count = 0;
-        receiving_rdm = false;
+        ReceiverAbort();
         return;
     }
     if (flags & USART_ISR_FE)
@@ -299,6 +370,8 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
         receiving_rdm = false;
         rx_index = data == 0 ? -1 : -2;
         frame_start = DMX512_Cycles();
+        rx_started_at = HAL_GetTick();
+        bus_state = data == 0 ? BUS_START_CODE : BUS_IDLE;
         return;
     }
     if (!(flags & USART_ISR_RXNE_RXFNE) || rx_index == -2) return;
@@ -307,17 +380,23 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
         receiving_rdm = data == 0xCC;
         if (receiving_rdm)
         {
+            bus_state = BUS_RDM_RX;
+            rx_started_cycles = DMX512_Cycles();
             rdm_staging[0] = data;
             rdm_count = 1;
             rx_index = 0;
         }
-        else rx_index = data == DMX_ST_CODE ? 0 : -2;
+        else
+        {
+            rx_index = data == DMX_ST_CODE ? 0 : -2;
+            bus_state = data == DMX_ST_CODE ? BUS_DMX_RX : BUS_IDLE;
+        }
     }
     else if (receiving_rdm)
     {
-        if (rdm_count >= sizeof rdm_staging) { rx_index = -2; return; }
+        if (rdm_count >= sizeof rdm_staging) { ReceiverAbort(); return; }
         rdm_staging[rdm_count++] = data;
-        if (rdm_count >= 3 && rdm_staging[2] < 24) { rx_index = -2; return; }
+        if (rdm_count >= 3 && rdm_staging[2] < 24) { ReceiverAbort(); return; }
         if (rdm_count >= 26 && rdm_count == (uint16_t)rdm_staging[2] + 2u)
         {
             if (!rdm_ready)
@@ -326,6 +405,7 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
                 rdm_length = rdm_count;
                 rdm_end = DMX512_Cycles();
                 rdm_ready = true;
+                bus_state = BUS_RDM_PENDING;
             }
             rx_index = -2;
         }
@@ -334,7 +414,13 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
     {
         staging[rx_index++] = data;
         rx_count++;
-        if (rx_index == 512) rx_index = -2;
+        if (rx_index == 512)
+        {
+            rx_index = -2;
+            bus_state = BUS_IDLE;
+            controller_seen = true;
+            controller_at = HAL_GetTick();
+        }
     }
 }
 
@@ -342,25 +428,32 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
 void DMX512_Service(void)
 {
     if (!port_uart) return;
-    if (applied_port != dmx_port_mode)
+    uint32_t expiration_lock = __get_PRIMASK();
+    __disable_irq();
+    ReceiverExpire();
+    __set_PRIMASK(expiration_lock);
+    if (applied_port != dmx_port_mode && !DMX512_BusBusy())
     {
         /* Il cambio direzione attende TC/guardia; nessun frame spezzato sul filo. */
-        if (tx_state) return;
         uint32_t lock = __get_PRIMASK();
         __disable_irq();
-        applied_port = dmx_port_mode;
-        frame_ready = have_frame = false;
-        rdm_ready = false;
-        dmx_timeout = 0;
-        dmxRxCount = 0;
-        memset((void *)dmxRxBuffer, 0, 512);
-        memset(node_slots, 0, 512);
-        node_at = HAL_GetTick();
-        rx_activity_seen = controller_seen = false;
-        ReceiveDirection();
-        TimerStop();
-        listen_until = HAL_GetTick() + 2000u;
-        if (applied_port != DMX_PORT_IN) TimerArm(1000);
+        if (!DMX512_BusBusy() && !(port_uart->Instance->ISR &
+            (USART_ISR_BUSY | USART_ISR_RXNE_RXFNE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE)))
+        {
+            applied_port = dmx_port_mode;
+            frame_ready = have_frame = false;
+            rdm_ready = false;
+            dmx_timeout = 0;
+            dmxRxCount = 0;
+            memset((void *)dmxRxBuffer, 0, 512);
+            memset(node_slots, 0, 512);
+            node_at = HAL_GetTick();
+            rx_activity_seen = controller_seen = false;
+            ReceiveDirection();
+            TimerStop();
+            listen_until = HAL_GetTick() + 2000u;
+            if (applied_port != DMX_PORT_IN) TimerArm(1000);
+        }
         __set_PRIMASK(lock);
     }
     if (rdm_ready)
@@ -372,8 +465,26 @@ void DMX512_Service(void)
         uint32_t end = rdm_end;
         memcpy(packet, rdm_pending, count);
         rdm_ready = false;
+        /* Una nuova richiesta iniziata nel frattempo conserva la proprietà RX:
+           la vecchia non può rispondere nella sua pausa inter-byte. */
+        if (bus_state == BUS_RDM_PENDING || bus_state == BUS_IDLE) bus_state = BUS_RDM_PROCESSING;
         __set_PRIMASK(lock);
+        bool valid = RDM_PacketValid(packet, count);
         RDM_Receive(packet, count, end);
+        lock = __get_PRIMASK();
+        __disable_irq();
+        if (bus_state == BUS_RDM_PROCESSING)
+        {
+            /* Richiesta per un altro responder: ascolta la sua risposta.
+               Un pacchetto risposta o un errore completa invece la ricezione. */
+            if (valid && (packet[20] == 0x10 || packet[20] == 0x20 || packet[20] == 0x30))
+            {
+                bus_state = BUS_OTHER_REPLY;
+                rx_started_at = HAL_GetTick();
+            }
+            else bus_state = BUS_IDLE;
+        }
+        __set_PRIMASK(lock);
     }
     if (applied_port != DMX_PORT_IN)
     {

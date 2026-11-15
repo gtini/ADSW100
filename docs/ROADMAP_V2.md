@@ -2,6 +2,28 @@
 
 Stato al 14 novembre 2026: baseline 480 MHz/stabilizzazione e branding/migrazione collaudati dall’utente (`0b5fa6c`, `1e71467`). Incremento RDM/Node implementato e verificato con build ARM e test host; collaudo fisico ancora da eseguire. Le caselle software non attestano misure hardware. Nessun commit/tag automatico. Audit in [AUDIT.md](AUDIT.md), persistenza in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md).
 
+## Correzione RDM Node / PID rete — 15 novembre 2026
+
+- [x] Registrare conferma utente: RDM e Node Art-Net/sACN operativi su hardware; restano GET/SET Node e visualizzazione PID rete.
+- [x] Confrontare DRV_STG4 (claim/rx_guard/presenza controller), URC01 (PHY/TC/discovery), RSH7 (framing/proxy).
+- [x] Verificare porta unica half-duplex e documentare limite due controller sulla stessa linea; nessun taglio arbitrario DMX per rispondere.
+- [x] Stati RX separati da TX: protezione da BREAK/SC fino a pacchetto completo e TC risposta, timeout di sicurezza e error recovery.
+- [x] Guardie USART BUSY/RXNE/errori, pending→main protetto e nuova ricezione che impedisce vecchie risposte.
+- [x] Cambio ruolo senza scartare GET immediatamente successivo al SET; ricontrollo in sezione critica.
+- [x] Deadline main1800 µs e primo byte discovery direttamente in TDR dopo DE, come URC01.
+- [x] Confermare che tutti i PID IP richiesti e i complementari obbligatori sono già annunciati; individuare assenza degli editor rete nel catalogo URC01, senza modificare il riferimento.
+- [x] Correggere PID070A (SET Interface ID0, route assente e NACK point-to-point), verificare PDL/endianness/GET/SET/NACK di tutti i PID.
+- [x] Applicare rete solo dopo TC ACK verificato, annullare lavoro se TX abortito; GET immediato coerente, staged fino ad APPLY.
+- [x] Documentare limite selettore legacy DHCP/statico e sequenza STATIC=0, DHCP=1, APPLY, CURRENT per abilitare DHCP.
+- [x] Dieci gruppi host PASS, incluse72 transazioni UART nei tre modi, cambio ruolo, errori/timeouts, ACK abortito e persistenza rete.
+- [x] Build ARM150 unità senza warning/errori e aggiornamento AUDIT/EEPROM_MIGRATION.
+- [ ] Collaudo di questo incremento su hardware: GET/SET ripetuti/consecutivi in IN e nei due Node, SET→GET senza attese aggiunte.
+- [ ] Misurare DE→primo bit discovery≤4 µs, TC→DE, turnaround176..2000 µs e ripresa Node; stress display/Ethernet/NFC/USB/I²C.
+- [ ] Verificare PID rete con controller E1.37-2 o richieste raw; il solo catalogo URC01 corrente non offre gli editor IPv4.
+- [ ] Verificare recovery pacchetto interrotto, controller scollegato, contesa di avvio e persistenza reale dopo power-cut.
+
+La gestione di presenza controller usa lo stesso principio DRV_STG4, adattato ad ADSW100: attività RX distinta da frame validato, lease controller2 s e proprietà della singola transazione fino a TC. Una cessione rilevata non rende la porta multi-master. Web, NFC e firmware dei riferimenti restano fuori ambito.
+
 ## Incremento corrente — RDM responder e DMX Node
 
 - [x] Confrontare RX/TX URC01/RSH7 e usare prioritariamente DRV_STG4 per direzione/finestre RS485.
