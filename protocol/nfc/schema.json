@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:studiodue:nfc:source:1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/registry"
+    },
+    {
+      "$ref": "#/$defs/catalog"
+    }
+  ],
+  "$defs": {
+    "registry": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "registry"
+        },
+        "format": {
+          "const": 1
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20,
+                "pattern": "^(std:[0-7][0-9A-F]{3}|mfr:[0-9A-F]{4}:[89A-F][0-9A-F]{3})$"
+              },
+              "semantic": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63
+              },
+              "type": {
+                "enum": [
+                  "opaque",
+                  "u8",
+                  "u16",
+                  "u32",
+                  "i8",
+                  "i16",
+                  "i32",
+                  "bool",
+                  "ascii",
+                  "ipv4",
+                  "ipv4_prefix",
+                  "route"
+                ]
+              },
+              "selector": {
+                "enum": [
+                  "none",
+                  "u8",
+                  "u32"
+                ]
+              },
+              "unit": {
+                "enum": [
+                  "none",
+                  "second",
+                  "minute",
+                  "hertz",
+                  "level"
+                ]
+              },
+              "minimum": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 4294967295
+              },
+              "maximum": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 4294967295
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "integer",
+                      "minimum": -2147483648,
+                      "maximum": 4294967295
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 63
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 64
+              },
+              "rdm_get": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "rdm_set": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 240
+              },
+              "status": {
+                "enum": [
+                  "observed",
+                  "assigned"
+                ]
+              }
+            },
+            "required": [
+              "key",
+              "semantic",
+              "name",
+              "type",
+              "selector",
+              "unit",
+              "minimum",
+              "maximum",
+              "choices",
+              "rdm_get",
+              "rdm_set",
+              "evidence",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 256
+        }
+      },
+      "required": [
+        "kind",
+        "format",
+        "parameters"
+      ],
+      "additionalProperties": false
+    },
+    "catalog": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "catalog"
+        },
+        "format": {
+          "const": 1
+        },
+        "manufacturer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-F]{4}$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[0-9A-F]{4}$"
+        },
+        "schema_revision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 20,
+                "pattern": "^(std:[0-7][0-9A-F]{3}|mfr:[0-9A-F]{4}:[89A-F][0-9A-F]{3})$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63
+              },
+              "minimum": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 4294967295
+              },
+              "maximum": {
+                "type": "integer",
+                "minimum": -2147483648,
+                "maximum": 4294967295
+              },
+              "default": {
+                "type": "string",
+                "maxLength": 128,
+                "pattern": "^([0-9A-F]{2})*$"
+              },
+              "selectors": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "minItems": 1,
+                "maxItems": 16
+              },
+              "access": {
+                "enum": [
+                  "r",
+                  "rw"
+                ]
+              },
+              "binding": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 63,
+                "pattern": "^[a-z][a-z0-9_]*$"
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "integer",
+                      "minimum": -2147483648,
+                      "maximum": 4294967295
+                    },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 63
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 0,
+                "maxItems": 64
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "minimum",
+              "maximum",
+              "default",
+              "selectors",
+              "access",
+              "binding",
+              "choices"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "category": {
+          "type": "string",
+          "pattern": "^[0-9A-F]{4}$",
+          "minLength": 4,
+          "maxLength": 4
+        }
+      },
+      "required": [
+        "kind",
+        "format",
+        "manufacturer",
+        "model",
+        "schema_revision",
+        "name",
+        "parameters",
+        "category"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

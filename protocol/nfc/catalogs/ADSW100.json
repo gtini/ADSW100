@@ -1,0 +1,258 @@
+{
+  "kind": "catalog",
+  "format": 1,
+  "manufacturer": "17FA",
+  "model": "0060",
+  "schema_revision": 1,
+  "name": "ADSW100",
+  "parameters": [
+    {
+      "key": "mfr:17FA:9100",
+      "label": "Port Mode",
+      "minimum": 0,
+      "maximum": 2,
+      "default": "00",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_dmx_port_mode",
+      "choices": [
+        {
+          "value": 0,
+          "label": "IN"
+        },
+        {
+          "value": 1,
+          "label": "ArtNet Node"
+        },
+        {
+          "value": 2,
+          "label": "sACN Node"
+        }
+      ]
+    },
+    {
+      "key": "mfr:17FA:9101",
+      "label": "Source Mode",
+      "minimum": 0,
+      "maximum": 3,
+      "default": "02",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_source_mode",
+      "choices": [
+        {
+          "value": 0,
+          "label": "DMX"
+        },
+        {
+          "value": 1,
+          "label": "Art-Net"
+        },
+        {
+          "value": 2,
+          "label": "sACN"
+        },
+        {
+          "value": 3,
+          "label": "Auto"
+        }
+      ]
+    },
+    {
+      "key": "mfr:17FA:9102",
+      "label": "Art-Net Universe",
+      "minimum": 0,
+      "maximum": 32767,
+      "default": "0000",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_artnet_universe",
+      "choices": []
+    },
+    {
+      "key": "mfr:17FA:9103",
+      "label": "sACN Universe",
+      "minimum": 1,
+      "maximum": 63999,
+      "default": "0001",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_sacn_universe",
+      "choices": []
+    },
+    {
+      "key": "mfr:17FA:9104",
+      "label": "sACN Transport",
+      "minimum": 0,
+      "maximum": 1,
+      "default": "00",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_sacn_transport",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Multicast"
+        },
+        {
+          "value": 1,
+          "label": "Unicast"
+        }
+      ]
+    },
+    {
+      "key": "mfr:17FA:9105",
+      "label": "sACN Priority",
+      "minimum": 0,
+      "maximum": 200,
+      "default": "00",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_sacn_priority",
+      "choices": []
+    },
+    {
+      "key": "mfr:17FA:9106",
+      "label": "Auto Order",
+      "minimum": 0,
+      "maximum": 5,
+      "default": "00",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_auto_priority",
+      "choices": [
+        {
+          "value": 0,
+          "label": "DMX ArtNet sACN"
+        },
+        {
+          "value": 1,
+          "label": "DMX sACN ArtNet"
+        },
+        {
+          "value": 2,
+          "label": "sACN DMX ArtNet"
+        },
+        {
+          "value": 3,
+          "label": "sACN ArtNet DMX"
+        },
+        {
+          "value": 4,
+          "label": "ArtNet DMX sACN"
+        },
+        {
+          "value": 5,
+          "label": "ArtNet sACN DMX"
+        }
+      ]
+    },
+    {
+      "key": "mfr:17FA:9107",
+      "label": "Display Auto OFF",
+      "minimum": 0,
+      "maximum": 1,
+      "default": "01",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_display_auto_off",
+      "choices": []
+    },
+    {
+      "key": "mfr:17FA:9108",
+      "label": "Relay OFF Time",
+      "minimum": 0,
+      "maximum": 30,
+      "default": "1E",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_off_time",
+      "choices": []
+    },
+    {
+      "key": "std:00F0",
+      "label": "DMX Address",
+      "minimum": 1,
+      "maximum": 512,
+      "default": "0001",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_dmx_address",
+      "choices": []
+    },
+    {
+      "key": "std:0703",
+      "label": "DHCP Mode",
+      "minimum": 0,
+      "maximum": 1,
+      "default": "01",
+      "selectors": [
+        1
+      ],
+      "access": "rw",
+      "binding": "cfg_use_dhcp",
+      "choices": []
+    },
+    {
+      "key": "std:0706",
+      "label": "Static IPv4 Prefix",
+      "minimum": 0,
+      "maximum": 32,
+      "default": "0000000000",
+      "selectors": [
+        1
+      ],
+      "access": "rw",
+      "binding": "cfg_stored_ip_mask",
+      "choices": []
+    },
+    {
+      "key": "std:070A",
+      "label": "Default Route",
+      "minimum": 0,
+      "maximum": 0,
+      "default": "0000000000000000",
+      "selectors": [
+        0
+      ],
+      "access": "rw",
+      "binding": "cfg_gateway",
+      "choices": []
+    },
+    {
+      "key": "std:070B",
+      "label": "DNS Server",
+      "minimum": 0,
+      "maximum": 0,
+      "default": "00000000",
+      "selectors": [
+        0,
+        1
+      ],
+      "access": "rw",
+      "binding": "cfg_dns",
+      "choices": []
+    }
+  ],
+  "category": "0601"
+}

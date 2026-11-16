@@ -10,6 +10,7 @@
 
 #include "stm32h7xx_hal.h"
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -60,7 +61,10 @@ bool DMX512_BusBusy(void);
 bool DMX512_CanReply(void);
 uint32_t DMX512_TxCompletionCount(void);
 uint32_t DMX512_TxFailureCount(void);
+/* Main, snapshot CDC non distruttivo di stati/registri e contatori RX. */
+void DMX512_FormatDiagnostics(char *out, size_t capacity);
 uint32_t DMX512_Cycles(void);
+/* Main, solo pacchetto RDM validato: rinnova cessione Node di 30000 ms in RAM. */
 void DMX512_ObserveController(void);
 
 #ifdef __cplusplus

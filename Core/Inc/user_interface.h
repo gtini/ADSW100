@@ -38,6 +38,8 @@ extern "C" {
 
 void InitUserInterface(void);
 void UserInterfaceTask(void);
+/* Main: il pannello ha priorità sul bus EEPROM durante la configurazione. */
+bool UI_ConfigActive(void);
 
 // Callback per aggiornare la Home con stato rete corrente
 void UI_OnNetRuntime(bool link_up, uint32_t ip_runtime_be);

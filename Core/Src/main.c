@@ -289,8 +289,7 @@ void hardware_check(void)
 
     // NFC test
 
-    NFC_I2C_DumpFirstBlocks(&hi2c1);
-    NFC_Test();
+    /* NFC avviato dopo identità RDM; nessuna lettura JSON legacy. */
 
     LAN9303_DumpLedCfg();
 
@@ -422,7 +421,7 @@ void task_1ms(void)
 void HardFactoryReset(bool preserve_identity)
 {
     // 1) EEPROM ai default
-    if ((preserve_identity ? EE_ResetUserMemory() : EE_InitMemory()) == HAL_OK)
+    if (EE_InitWithNfc(preserve_identity) == HAL_OK)
         USB_Printf("HFR: EEPROM defaults OK\r\n");
     else
     {
@@ -437,32 +436,8 @@ void HardFactoryReset(bool preserve_identity)
         return;
     }
 
-    // 3) NFC reset + riscrittura MAGIC/JSON
-    if (NFC_I2C_InitQuickReaddress(&hi2c1))
-    {
-        bool ok_n = NFC_InitMemory(&hi2c1);
-        USB_Printf("HFR: NTAG init %s\r\n", ok_n ? "OK" : "FAIL");
-
-        uint8_t mac[6];
-        EE_GetLocalMAC48(mac);
-        char magic[64];
-        build_magic_from_eui(magic, sizeof(magic), mac);
-
-        uint8_t dm, net, su; uint16_t uni, pr; bool dh;
-        char ip[16], mk[16], gw[16];
-        get_runtime_vars(&dm, &uni, &net, &su, &pr, &dh, ip, mk, gw);
-
-        char json[768];
-        if (cfg_to_json_vars(dm, uni, net, su, pr, dh, ip, mk, gw, magic, json, sizeof json)
-            && ndef_write_mime_json(&hi2c1, json))
-        {
-            USB_Printf("HFR: NTAG written (MIME+JSON+MAGIC)\r\n");
-        }
-        else USB_Printf("HFR: NTAG write FAILED\r\n");
-    }
-    else {
-        USB_Printf("HFR: no NTAG on I2C -> skipping NFC reset\r\n");
-    }
+    /* Il servizio NFC completerà dopo reboot l’intento Init persistente,
+       senza cancellare contenuti estranei o modificare UID/lock. */
 
     USB_Printf("HFR: completed, system will reboot now...\r\n");
     HAL_Delay(100);
@@ -632,6 +607,7 @@ int main(void)
   MX_LWIP_Init();
   MX_RTC_Init();
   /* USER CODE BEGIN 2 */
+  NFC_RecordBoot(1, RCC->RSR);
 
   HAL_TIM_Base_Start_IT(&htim6); // abilita interrupt timer 6 (1mS)
 
@@ -672,6 +648,7 @@ int main(void)
   LCD_Init();          // inizializza HW
   LCD_Clear();         // pulisci RAM
   RTC_I2C_Init();
+  NFC_RecordBoot(2, 0);
 
   InitDMX512(&huart1);
   InitRelay();
@@ -679,9 +656,10 @@ int main(void)
 
   // Diagnostica EEPROM / MAC / cfg
   hardware_check();
+  NFC_RecordBoot(3, 0);
 
   // Verifica NFC
-  NFC_Service();
+  /* NFC inizializzato dopo RDM_Init. */
 
 
   // Cancella locazione Init per test !!!
@@ -703,6 +681,8 @@ int main(void)
   // Post-LwIP (callback, DNS, ecc.)
   Network_InitAfterLwip();
   RDM_Init();
+  NFC_Init();
+  NFC_RecordBoot(4, 0);
 
   ETH_PrintMemMap(); // invia per debug descrittori e RX pool
 
@@ -724,6 +704,7 @@ int main(void)
       DMX512_Service();
       RDM_Task();
       USB_ServiceTask();
+      NFC_Service();
 	  if (timer_1ms_flag)
 	  {
 		  timer_1ms_flag = false;

@@ -29,8 +29,17 @@ static volatile uint16_t tx_index, tx_count;
 static uint8_t tx_data[513], node_slots[512];
 static volatile uint32_t node_at, listen_until, rx_activity_at, controller_at;
 static volatile bool controller_seen, rx_activity_seen;
+/* Cessione RDM in RAM, distinta dal rilevamento DMX e valida per entrambi i Node. */
+static volatile bool rdm_controller_seen;
+static volatile uint32_t rdm_controller_at;
+#define RDM_CONTROLLER_HOLD_MS 30000u
 static uint8_t applied_port = 255, listen_phase;
-static uint8_t rdm_staging[257], rdm_pending[257];
+static uint8_t rdm_staging[257], rdm_pending[257], rdm_next[257];
+/* Due snapshot: il secondo broadcast non deve sparire mentre il main
+   elabora il primo. Nessuna allocazione o logica PID nel proprietario UART. */
+static volatile bool rdm_next_ready;
+static volatile uint16_t rdm_next_length;
+static volatile uint32_t rdm_next_end;
 static volatile uint16_t rdm_length;
 static volatile uint32_t rdm_end;
 static volatile bool rdm_ready;
@@ -38,6 +47,8 @@ static bool receiving_rdm;
 static uint16_t rdm_count;
 static uint32_t frame_start;
 static volatile uint32_t frames_sent, rdm_seen, tx_faults;
+static volatile uint32_t rx_packets, rx_timeouts, rx_dropped, rx_fe, rx_ne, rx_ore;
+static volatile uint32_t rx_bytes, dmx_frames, rx_deferred;
 
 /* Proprietà RX distinta dalle fasi TX: un timer periodico non può sottrarre
    il bus a un pacchetto in corso o a una risposta non ancora terminata al TC. */
@@ -74,7 +85,9 @@ static void ReceiverExpire(void)
          cycles - rdm_end > DMX_RDM_SERVICE_US * per_us) ||
         (bus_state == BUS_OTHER_REPLY && now - rx_started_at >= 6u))
     {
-        if (bus_state == BUS_RDM_PENDING) rdm_ready = false;
+        ++rx_timeouts;
+        /* Scade la proprieta' del bus, non il messaggio. Un broadcast UN_MUTE
+           resta da elaborare nel main anche oltre la deadline delle risposte. */
         ReceiverAbort();
     }
 }
@@ -102,6 +115,41 @@ uint32_t DMX512_TxCompletionCount(void)
     return frames_sent;
 }
 
+/* Diagnostica non bloccante nel main; nessuna formattazione o stampa ISR.
+   FE include anche BREAK validi, NE/ORE contano i singoli flag osservati. */
+void DMX512_FormatDiagnostics(char *out, size_t capacity)
+{
+    if (!out || !capacity) return;
+    uint32_t key = __get_PRIMASK();
+    __disable_irq();
+    uint32_t cr1 = port_uart ? port_uart->Instance->CR1 : 0;
+    uint32_t cr3 = port_uart ? port_uart->Instance->CR3 : 0;
+    uint32_t isr = port_uart ? port_uart->Instance->ISR : 0;
+    uint32_t packets = rx_packets, expired = rx_timeouts, drops = rx_dropped;
+    uint32_t bytes = rx_bytes, frames = dmx_frames, deferred = rx_deferred;
+    uint32_t fe = rx_fe, ne = rx_ne, ore = rx_ore, faults = tx_faults, sent = frames_sent;
+    uint32_t timer_cr1 = TIM7->CR1, timer_dier = TIM7->DIER, timer_sr = TIM7->SR;
+    uint32_t timer_arr = TIM7->ARR, timer_cnt = TIM7->CNT;
+    unsigned tx = tx_state, bus = bus_state, ready = (unsigned)rdm_ready + (unsigned)rdm_next_ready;
+    unsigned de = HAL_GPIO_ReadPin(RDM_DIR_GPIO_Port, RDM_DIR_Pin) == GPIO_PIN_SET;
+    unsigned irq = NVIC_GetEnableIRQ(USART1_IRQn), irq_pending = NVIC_GetPendingIRQ(USART1_IRQn);
+    unsigned rx_pin = HAL_GPIO_ReadPin(RDM_RXD_GPIO_Port, RDM_RXD_Pin) == GPIO_PIN_SET;
+    unsigned role = applied_port, configured_role = dmx_port_mode;
+    uint32_t age = HAL_GetTick() - rdm_controller_at;
+    uint32_t rdm_hold = rdm_controller_seen && age < RDM_CONTROLLER_HOLD_MS ?
+                        RDM_CONTROLLER_HOLD_MS - age : 0;
+    __set_PRIMASK(key);
+    snprintf(out, capacity,
+             "ms=%lu tx=%u bus=%u pending=%u de=%u hold=%lu irq=%u/%u pin=%u role=%u/%u cr1=%lX cr3=%lX isr=%lX tim=%lX/%lX/%lX/%lu/%lu rx=%lu exp=%lu drop=%lu fe=%lu ne=%lu ore=%lu sent=%lu fault=%lu bytes=%lu dmx=%lu defer=%lu\r\n",
+             (unsigned long)HAL_GetTick(), tx, bus, ready, de, (unsigned long)rdm_hold, irq, irq_pending, rx_pin, role, configured_role,
+             (unsigned long)cr1, (unsigned long)cr3,
+             (unsigned long)isr, (unsigned long)timer_cr1, (unsigned long)timer_dier, (unsigned long)timer_sr,
+             (unsigned long)timer_arr, (unsigned long)timer_cnt,
+             (unsigned long)packets,(unsigned long)expired,(unsigned long)drops,(unsigned long)fe,
+             (unsigned long)ne,(unsigned long)ore, (unsigned long)sent, (unsigned long)faults,
+             (unsigned long)bytes, (unsigned long)frames, (unsigned long)deferred);
+}
+
 uint32_t DMX512_Cycles(void)
 {
     return DWT->CYCCNT;
@@ -120,6 +168,9 @@ static void TimerStop(void)
 
 static void TimerArm(uint16_t microseconds)
 {
+    /* TIM6/TIM7: ARR=0 blocca il contatore anche con CEN=1. Con tick da
+       1 us il minimo one-shot valido e' 2 us (ARR=1), mai 1 us (ARR=0). */
+    if (microseconds < 2u) microseconds = 2u;
     TimerStop();
     TIM7->ARR = microseconds - 1u;
     TIM7->CNT = 0;
@@ -166,16 +217,29 @@ static void BeginBreak(void)
     TimerArm(176);
 }
 
+/* Main con IRQ mascherati oppure ISR: scadenza memorizzata anche in IN,
+   senza riaprire una vecchia cessione al wrap del tick. */
+static bool RDMControllerPresent(uint32_t now)
+{
+    if (rdm_controller_seen && now - rdm_controller_at >= RDM_CONTROLLER_HOLD_MS)
+    {
+        rdm_controller_seen = false;
+    }
+    return rdm_controller_seen;
+}
+
 /* Nodo: mai iniziare se linea bassa, attività pendente o altro controller.
-   Un controllore rilevato in RX sospende il TX autonomo per 2 s. */
+   DMX mantiene la cessione esistente di 2 s; RDM valido la rinnova a 30 s. */
 static void NodeTryStart(void)
 {
     ReceiverExpire();
     uint32_t now = HAL_GetTick();
     if (applied_port == DMX_PORT_IN || applied_port > DMX_PORT_SACN_NODE) return;
-    if ((int32_t)(now - listen_until) < 0 || rdm_ready || bus_state != BUS_IDLE ||
+    bool rdm_controller = RDMControllerPresent(now);
+    if ((int32_t)(now - listen_until) < 0 || bus_state != BUS_IDLE ||
         (rx_activity_seen && now - rx_activity_at < 30u) ||
         (controller_seen && now - controller_at < 2000u) ||
+        rdm_controller ||
         (port_uart->Instance->ISR & (USART_ISR_RXNE_RXFNE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE | USART_ISR_BUSY)) ||
         HAL_GPIO_ReadPin(RDM_RXD_GPIO_Port, RDM_RXD_Pin) == GPIO_PIN_RESET)
     {
@@ -272,6 +336,11 @@ void DMX512_ObserveController(void)
 {
     controller_seen = true;
     controller_at = HAL_GetTick();
+    /* Chiamata dal main dopo verifica completa del pacchetto, incluso CRC.
+       BREAK/SC e pacchetto parziale sono gia' protetti dagli stati BUS_RX;
+       rumore, pacchetti interrotti e CRC errati non rinnovano i 30 secondi. */
+    rdm_controller_at = HAL_GetTick();
+    rdm_controller_seen = true;
     ++rdm_seen;
 }
 
@@ -288,8 +357,9 @@ void InitDMX512(UART_HandleTypeDef *huart)
     rx_count = 0;
     applied_port = DMX_PORT_IN;
     tx_state = 0;
-    rdm_ready = false;
-    rx_activity_seen = controller_seen = false;
+    rdm_ready = rdm_next_ready = false;
+    rx_activity_seen = controller_seen = rdm_controller_seen = false;
+    rdm_controller_at = 0;
     bus_state = BUS_IDLE;
     port_uart = huart;
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
@@ -333,6 +403,10 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
     }
     if (!(flags & (USART_ISR_RXNE_RXFNE | USART_ISR_FE | USART_ISR_NE | USART_ISR_ORE))) return;
     uint8_t data = (uint8_t)READ_REG(huart->Instance->RDR);
+    if (flags & USART_ISR_RXNE_RXFNE) ++rx_bytes;
+    if (flags & USART_ISR_FE) ++rx_fe;
+    if (flags & USART_ISR_NE) ++rx_ne;
+    if (flags & USART_ISR_ORE) ++rx_ore;
     if (tx_state)
     {
         /* Anche durante TX FE/NE/ORE restano sorgenti IRQ finché non azzerati.
@@ -358,6 +432,7 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
             memcpy(pending, staging, rx_count);
             memset(pending + rx_count, 0, 512u - rx_count);
             pending_count = rx_count;
+            ++dmx_frames;
             frame_time = HAL_GetTick();
             frame_ready = true;
             if (DMX512_Cycles() - frame_start >= 1196u * (SystemCoreClock / 1000000u))
@@ -399,6 +474,7 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
         if (rdm_count >= 3 && rdm_staging[2] < 24) { ReceiverAbort(); return; }
         if (rdm_count >= 26 && rdm_count == (uint16_t)rdm_staging[2] + 2u)
         {
+            ++rx_packets;
             if (!rdm_ready)
             {
                 memcpy(rdm_pending, rdm_staging, rdm_count);
@@ -407,6 +483,16 @@ void DMX512UARTInterrupt(UART_HandleTypeDef *huart)
                 rdm_ready = true;
                 bus_state = BUS_RDM_PENDING;
             }
+            else if (!rdm_next_ready)
+            {
+                memcpy(rdm_next, rdm_staging, rdm_count);
+                rdm_next_length = rdm_count;
+                rdm_next_end = DMX512_Cycles();
+                rdm_next_ready = true;
+                bus_state = BUS_RDM_PENDING;
+            }
+            else ++rx_dropped;
+            bus_state = BUS_RDM_PENDING;
             rx_index = -2;
         }
     }
@@ -431,6 +517,7 @@ void DMX512_Service(void)
     uint32_t expiration_lock = __get_PRIMASK();
     __disable_irq();
     ReceiverExpire();
+    (void)RDMControllerPresent(HAL_GetTick());
     __set_PRIMASK(expiration_lock);
     if (applied_port != dmx_port_mode && !DMX512_BusBusy())
     {
@@ -442,13 +529,15 @@ void DMX512_Service(void)
         {
             applied_port = dmx_port_mode;
             frame_ready = have_frame = false;
-            rdm_ready = false;
+            rdm_ready = rdm_next_ready = false;
             dmx_timeout = 0;
             dmxRxCount = 0;
             memset((void *)dmxRxBuffer, 0, 512);
             memset(node_slots, 0, 512);
             node_at = HAL_GetTick();
             rx_activity_seen = controller_seen = false;
+            /* Conserva la cessione RDM: il SET IN->Node non riavvia il TX
+               mentre il tool sta ancora configurando il dispositivo. */
             ReceiveDirection();
             TimerStop();
             listen_until = HAL_GetTick() + 2000u;
@@ -456,7 +545,14 @@ void DMX512_Service(void)
         }
         __set_PRIMASK(lock);
     }
-    if (rdm_ready)
+    /* Messaggio completo non significa linea gia' libera: non consumare lo
+       snapshot se BUSY persiste. Il main riprova al giro successivo, senza
+       attese; un nuovo BREAK mantiene la propria gestione e la deadline
+       esistente libera comunque una transazione che non termina. */
+    bool wait_uart = rdm_ready && bus_state == BUS_RDM_PENDING &&
+                     (port_uart->Instance->ISR & USART_ISR_BUSY);
+    if (wait_uart) ++rx_deferred;
+    if (rdm_ready && !wait_uart)
     {
         uint8_t packet[257];
         uint32_t lock = __get_PRIMASK();
@@ -464,16 +560,27 @@ void DMX512_Service(void)
         uint16_t count = rdm_length;
         uint32_t end = rdm_end;
         memcpy(packet, rdm_pending, count);
-        rdm_ready = false;
+        if (rdm_next_ready)
+        {
+            memcpy(rdm_pending, rdm_next, rdm_next_length);
+            rdm_length = rdm_next_length;
+            rdm_end = rdm_next_end;
+            rdm_next_ready = false;
+        }
+        else rdm_ready = false;
         /* Una nuova richiesta iniziata nel frattempo conserva la proprietà RX:
            la vecchia non può rispondere nella sua pausa inter-byte. */
-        if (bus_state == BUS_RDM_PENDING || bus_state == BUS_IDLE) bus_state = BUS_RDM_PROCESSING;
+        if (!tx_state && (bus_state == BUS_RDM_PENDING || bus_state == BUS_IDLE)) bus_state = BUS_RDM_PROCESSING;
         __set_PRIMASK(lock);
         bool valid = RDM_PacketValid(packet, count);
         RDM_Receive(packet, count, end);
         lock = __get_PRIMASK();
         __disable_irq();
-        if (bus_state == BUS_RDM_PROCESSING)
+        if (bus_state == BUS_RDM_PROCESSING && rdm_ready)
+        {
+            bus_state = BUS_RDM_PENDING;
+        }
+        else if (bus_state == BUS_RDM_PROCESSING)
         {
             /* Richiesta per un altro responder: ascolta la sua risposta.
                Un pacchetto risposta o un errore completa invece la ricezione. */

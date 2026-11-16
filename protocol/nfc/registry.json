@@ -1,0 +1,1197 @@
+{
+  "kind": "registry",
+  "format": 1,
+  "parameters": [
+    {
+      "key": "mfr:0206:8001",
+      "semantic": "splitter_mode",
+      "name": "Splitter Mode",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 2,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Transparent"
+        },
+        {
+          "value": 1,
+          "label": "Full Proxy"
+        },
+        {
+          "value": 2,
+          "label": "Transparent Plus"
+        }
+      ],
+      "rdm_get": "UINT8",
+      "rdm_set": "UINT8",
+      "evidence": "RSH7 Core/Inc/rdm.h; Core/Src/rdm.c RDM_LocalParameterDescription",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8002",
+      "semantic": "ds_rdm_enable",
+      "name": "DS RDM Enable",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "UINT8",
+      "rdm_set": "UINT8",
+      "evidence": "RSH7 Core/Inc/rdm.h; Core/Src/rdm.c RDM_LocalParameterDescription",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8003",
+      "semantic": "frame_forward_mode",
+      "name": "Frame Forward Mode",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Standard 512"
+        },
+        {
+          "value": 1,
+          "label": "Universal"
+        }
+      ],
+      "rdm_get": "UINT8",
+      "rdm_set": "UINT8",
+      "evidence": "RSH7 Core/Inc/rdm.h; Core/Src/rdm.c RDM_LocalParameterDescription",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8200",
+      "semantic": "pwm_frequency",
+      "name": "PWM Frequency",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 6,
+      "choices": [
+        {
+          "value": 0,
+          "label": "F1"
+        },
+        {
+          "value": 1,
+          "label": "F2"
+        },
+        {
+          "value": 2,
+          "label": "F3"
+        },
+        {
+          "value": 3,
+          "label": "F4"
+        },
+        {
+          "value": 4,
+          "label": "F5"
+        },
+        {
+          "value": 5,
+          "label": "F6"
+        },
+        {
+          "value": 6,
+          "label": "F7"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u8 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8201",
+      "semantic": "smooth",
+      "name": "Smooth",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 3,
+      "choices": [
+        {
+          "value": 0,
+          "label": "0"
+        },
+        {
+          "value": 1,
+          "label": "1"
+        },
+        {
+          "value": 2,
+          "label": "2"
+        },
+        {
+          "value": 3,
+          "label": "3"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u8 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8202",
+      "semantic": "halogen_simulation",
+      "name": "Halogen Simulation",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 2,
+      "choices": [
+        {
+          "value": 0,
+          "label": "0"
+        },
+        {
+          "value": 1,
+          "label": "1"
+        },
+        {
+          "value": 2,
+          "label": "2"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u8 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8203",
+      "semantic": "cym_simulation",
+      "name": "CYM Simulation",
+      "type": "bool",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "bool canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8301",
+      "semantic": "wdmx_bridge",
+      "name": "WDMX Bridge",
+      "type": "bool",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "bool canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8400",
+      "semantic": "internal_initialization",
+      "name": "Internal Initialization",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 7,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u8 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:8500",
+      "semantic": "legacy_display_auto_off",
+      "name": "Legacy Display Auto OFF",
+      "type": "bool",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "bool canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E000",
+      "semantic": "scene_enable",
+      "name": "Scene Enable",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E001",
+      "semantic": "scene_channel_1",
+      "name": "Scene Channel 1",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E002",
+      "semantic": "scene_channel_2",
+      "name": "Scene Channel 2",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E003",
+      "semantic": "scene_channel_3",
+      "name": "Scene Channel 3",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E004",
+      "semantic": "scene_channel_4",
+      "name": "Scene Channel 4",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E005",
+      "semantic": "scene_channel_5",
+      "name": "Scene Channel 5",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E006",
+      "semantic": "scene_channel_6",
+      "name": "Scene Channel 6",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E007",
+      "semantic": "scene_channel_7",
+      "name": "Scene Channel 7",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E100",
+      "semantic": "ramp_algorithm",
+      "name": "Ramp Algorithm",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Legacy"
+        },
+        {
+          "value": 1,
+          "label": "Modern"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E101",
+      "semantic": "dimming_curve",
+      "name": "Dimming Curve",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 2,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Legacy"
+        },
+        {
+          "value": 1,
+          "label": "Quadratic"
+        },
+        {
+          "value": 2,
+          "label": "Linear"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E102",
+      "semantic": "ramp_type",
+      "name": "Ramp Type",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 5,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Slow"
+        },
+        {
+          "value": 1,
+          "label": "Medium"
+        },
+        {
+          "value": 2,
+          "label": "Fast"
+        },
+        {
+          "value": 3,
+          "label": "Direct"
+        },
+        {
+          "value": 4,
+          "label": "Custom"
+        },
+        {
+          "value": 5,
+          "label": "Dynamic2"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E103",
+      "semantic": "oled_mode",
+      "name": "OLED Mode",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Auto OFF"
+        },
+        {
+          "value": 1,
+          "label": "Always ON"
+        }
+      ],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E104",
+      "semantic": "oled_off_time",
+      "name": "OLED OFF Time",
+      "type": "u16",
+      "selector": "none",
+      "unit": "second",
+      "minimum": 10,
+      "maximum": 3600,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:0206:E105",
+      "semantic": "oled_save_time",
+      "name": "OLED Save Time",
+      "type": "u16",
+      "selector": "none",
+      "unit": "minute",
+      "minimum": 0,
+      "maximum": 240,
+      "choices": [],
+      "rdm_get": "current/count for 8200..8203; canonical otherwise",
+      "rdm_set": "u16 canonical; Factory authorization for 8400",
+      "evidence": "DRV_STG4 Core/Src/defs.c rdm_settings, pwm_options; rdm.c dispatcher",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9100",
+      "semantic": "port_mode",
+      "name": "Port Mode",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 2,
+      "choices": [
+        {
+          "value": 0,
+          "label": "IN"
+        },
+        {
+          "value": 1,
+          "label": "ArtNet Node"
+        },
+        {
+          "value": 2,
+          "label": "sACN Node"
+        }
+      ],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9101",
+      "semantic": "source_mode",
+      "name": "Source Mode",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 3,
+      "choices": [
+        {
+          "value": 0,
+          "label": "DMX"
+        },
+        {
+          "value": 1,
+          "label": "Art-Net"
+        },
+        {
+          "value": 2,
+          "label": "sACN"
+        },
+        {
+          "value": 3,
+          "label": "Auto"
+        }
+      ],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9102",
+      "semantic": "art_net_universe",
+      "name": "Art-Net Universe",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 32767,
+      "choices": [],
+      "rdm_get": "u16 canonical (bool encoded u8)",
+      "rdm_set": "u16 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9103",
+      "semantic": "sacn_universe",
+      "name": "sACN Universe",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 1,
+      "maximum": 63999,
+      "choices": [],
+      "rdm_get": "u16 canonical (bool encoded u8)",
+      "rdm_set": "u16 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9104",
+      "semantic": "sacn_transport",
+      "name": "sACN Transport",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [
+        {
+          "value": 0,
+          "label": "Multicast"
+        },
+        {
+          "value": 1,
+          "label": "Unicast"
+        }
+      ],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9105",
+      "semantic": "sacn_priority",
+      "name": "sACN Priority",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 200,
+      "choices": [],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9106",
+      "semantic": "auto_order",
+      "name": "Auto Order",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 5,
+      "choices": [
+        {
+          "value": 0,
+          "label": "DMX ArtNet sACN"
+        },
+        {
+          "value": 1,
+          "label": "DMX sACN ArtNet"
+        },
+        {
+          "value": 2,
+          "label": "sACN DMX ArtNet"
+        },
+        {
+          "value": 3,
+          "label": "sACN ArtNet DMX"
+        },
+        {
+          "value": 4,
+          "label": "ArtNet DMX sACN"
+        },
+        {
+          "value": 5,
+          "label": "ArtNet sACN DMX"
+        }
+      ],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9107",
+      "semantic": "display_auto_off",
+      "name": "Display Auto OFF",
+      "type": "bool",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "bool canonical (bool encoded u8)",
+      "rdm_set": "bool canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "mfr:17FA:9108",
+      "semantic": "relay_off_time",
+      "name": "Relay OFF Time",
+      "type": "u8",
+      "selector": "none",
+      "unit": "second",
+      "minimum": 0,
+      "maximum": 30,
+      "choices": [],
+      "rdm_get": "u8 canonical (bool encoded u8)",
+      "rdm_set": "u8 canonical (bool encoded u8)",
+      "evidence": "ADSW100 Core/Src/rdm.c custom[]; cfg_io.c CFG_ValidateValue",
+      "status": "observed"
+    },
+    {
+      "key": "std:0001",
+      "semantic": "discovery_unique_branch",
+      "name": "Discovery Unique Branch",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0002",
+      "semantic": "discovery_mute",
+      "name": "Discovery Mute",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0003",
+      "semantic": "discovery_unmute",
+      "name": "Discovery Unmute",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0010",
+      "semantic": "proxied_devices",
+      "name": "Proxied Devices",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0011",
+      "semantic": "proxied_device_count",
+      "name": "Proxied Device Count",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0015",
+      "semantic": "comms_status",
+      "name": "Comms Status",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0020",
+      "semantic": "queued_message",
+      "name": "Queued Message",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0030",
+      "semantic": "status_messages",
+      "name": "Status Messages",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0050",
+      "semantic": "supported_parameters",
+      "name": "Supported Parameters",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0051",
+      "semantic": "parameter_description",
+      "name": "Parameter Description",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0060",
+      "semantic": "device_info",
+      "name": "Device Info",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0070",
+      "semantic": "product_detail_id_list",
+      "name": "Product Detail ID List",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0080",
+      "semantic": "device_model_description",
+      "name": "Device Model Description",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0081",
+      "semantic": "manufacturer_label",
+      "name": "Manufacturer Label",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0082",
+      "semantic": "device_label",
+      "name": "Device Label",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0090",
+      "semantic": "factory_defaults",
+      "name": "Factory Defaults",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:00C0",
+      "semantic": "software_version_label",
+      "name": "Software Version Label",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:00E0",
+      "semantic": "dmx_personality",
+      "name": "Personality",
+      "type": "u8",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 1,
+      "maximum": 255,
+      "choices": [],
+      "rdm_get": "current:u8 count:u8",
+      "rdm_set": "current:u8",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:00E1",
+      "semantic": "personality_description",
+      "name": "Personality Description",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:00F0",
+      "semantic": "dmx_address",
+      "name": "DMX Address",
+      "type": "u16",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 1,
+      "maximum": 512,
+      "choices": [],
+      "rdm_get": "address:u16 BE",
+      "rdm_set": "address:u16 BE",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0343",
+      "semantic": "curve",
+      "name": "Curve",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0400",
+      "semantic": "device_hours",
+      "name": "Device Hours",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0401",
+      "semantic": "lamp_hours",
+      "name": "Lamp Hours",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0700",
+      "semantic": "list_interfaces",
+      "name": "List Interfaces",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0701",
+      "semantic": "interface_label",
+      "name": "Interface Label",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0702",
+      "semantic": "interface_hardware_address",
+      "name": "Interface Hardware Address",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0703",
+      "semantic": "ipv4_dhcp_mode",
+      "name": "DHCP Mode",
+      "type": "bool",
+      "selector": "u32",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 1,
+      "choices": [],
+      "rdm_get": "interface:u32 mode:u8",
+      "rdm_set": "interface:u32 mode:u8",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0705",
+      "semantic": "ipv4_current_address",
+      "name": "IPv4 Current Address",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0706",
+      "semantic": "ipv4_static_address",
+      "name": "Static IPv4 Prefix",
+      "type": "ipv4_prefix",
+      "selector": "u32",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 32,
+      "choices": [],
+      "rdm_get": "interface:u32 IPv4:4 prefix:u8",
+      "rdm_set": "interface:u32 IPv4:4 prefix:u8",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:0709",
+      "semantic": "interface_apply_configuration",
+      "name": "Interface Apply Configuration",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:070A",
+      "semantic": "ipv4_default_route",
+      "name": "Default Route",
+      "type": "route",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "interface:u32 gateway:4",
+      "rdm_set": "route_id:u32 gateway:4 (ADSW SET route_id=0)",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:070B",
+      "semantic": "dns_ipv4_server",
+      "name": "DNS Server",
+      "type": "ipv4",
+      "selector": "u8",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "index:u8 IPv4:4",
+      "rdm_set": "index:u8 IPv4:4",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    },
+    {
+      "key": "std:1000",
+      "semantic": "identify_device",
+      "name": "Identify Device",
+      "type": "opaque",
+      "selector": "none",
+      "unit": "none",
+      "minimum": 0,
+      "maximum": 0,
+      "choices": [],
+      "rdm_get": "Verificare contratto standard/dispatcher",
+      "rdm_set": "Non pubblicato nel catalogo NFC",
+      "evidence": "Censimento docs/NFC_PROTOCOL.md",
+      "status": "observed"
+    }
+  ]
+}

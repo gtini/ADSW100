@@ -3,9 +3,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-/* Model ID non assegnato: placeholder dichiarato, da registrare sotto 17FA.
-   Non copiare il Model ID di altri prodotti e non confonderlo con OEM Art-Net. */
-#define ADSW_RDM_MODEL_ID 0xFFFFu
+/* Assegnazione utente 15/11/2026: ADSW100/NODIM01, tutti i brand sotto17FA.
+   Model ID RDM16 bit, distinto da UID unita', OEM e codice uploader. */
+#define ADSW_RDM_MODEL_ID 0x0060u
 /* Nuove assegnazioni ADSW100, distinte da RSH7 8001..8003 e DRV_STG4 82xx/E1xx. */
 #define PID_DMX_PORT_MODE  0x9100u
 #define PID_SOURCE_MODE    0x9101u

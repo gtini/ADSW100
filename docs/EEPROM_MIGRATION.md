@@ -1,5 +1,56 @@
 # EEPROM: compatibilità e migrazione Videlio
 
+## Correzione hook salvataggi locali — 16 novembre 2026
+
+Mappa0x00..0x37 e versioni invariate. L'Init tag pendente E8 non deve dipendere dalla disponibilità NFC per consentire un salvataggio del pannello. Un edit locale con valore cambiato annulla tale consenso, incrementa la revisione e prepara C3 prima di scrivere il parametro. Non inizializza il tag e non riapplica default. Un successivo Init Memory esplicito può autorizzarlo nuovamente.
+
+C3 dopo reboot non viene finalizzato automaticamente. Una nuova azione locale verifica l'intera configurazione persistente e incrementa ancora la revisione prima del salvataggio; la pubblicazione NFC resta subordinata alla corrispondenza RAM/EEPROM. B6/D7 o metadati NF riconoscibili ma non validi restano conservativi: nessun recupero ambiguo o inizializzazione automatica. Gli errori I/O si propagano al pannello, senza rimuovere artificialmente l'asterisco.
+
+Il flag diagnostico NFC OFF è solo RAM: nessun nuovo byte EEPROM. Gli hook metadati e i controlli restano attivi anche nella build OFF per non rendere nuovamente applicabile una richiesta obsoleta. Test host: nuovi salvataggi E8/C3 e24scenari di taglio durante invalidazione locale, oltre ai test legacy/REQUEST/Init. Persistenza e power-cut fisico ancora da verificare; procedura A/B in AUDIT.md.
+
+
+## Verifica correzione I2C — 16 novembre 2026
+
+Correzione limitata al trasporto/diagnostica NFC e agli IRQ I2C1. File eeprom.c/h, mappa0x00..0x37, stati metadata, versione, salvataggi e recovery verificati per hash identico a inizio intervento; nessuna nuova inizializzazione, migrazione o cambio indirizzo EEPROM. NfcBuild/Parse/Process e catalogo/SYNC1 invariati. Le regressioni legacy e power-cut host della fase2 restano PASS; nessuna nuova prova fisica EEPROM dichiarata.
+
+## Fase 2 NFC implementata — 15 novembre 2026
+
+Nessun offset legacy0x00..0x27 o versione struttura3 è stato spostato. Bootstrap NFC scrive solo i16byte autorizzati0x28..0x37; REQUEST valide cambiano esclusivamente i parametri richiesti tramite CFG/EE_SaveConfig. Init Memory esplicito continua a ripristinare i default come previsto, preservando l'identità quando richiesto, e ora accoda anche l'inizializzazione del tag.
+
+| Offset | Formato corrente |
+| --- | --- |
+| 28..29 | ASCII NF |
+| 2A | Versione metadati1, indipendente da schema/firmware |
+| 2B | A5 commesso; B6 richiesta preparata; C3 salvataggio locale; D7 Init EEPROM preparato; E8 Init tag autorizzato |
+| 2C..2F | Revisione dinamica configurazione BE32, zero invalido, wrap a1 |
+| 30..33 | Ultima richiesta associata BE32 |
+| 34..37 | CRC32 della richiesta, non CRC della configurazione |
+
+Scrittura metadata: invalida stato, scrive/verifica corpo, sigilla per ultimo. Transizioni di solo stato usano un byte con lettura/readback. Nessun init per NF riconoscibile ma incoerente, I/O fallito o versione ignota. Byte non riconosciuti legacy non si interpretano come richieste; bootstrap solo con configurazione valida e tag vuoto, mai da un JSON/SNAPSHOT obsoleto.
+
+`EE_Write` prepara C3 prima delle modifiche locali esportate, coprendo i vecchi setter diretti UI. Versione/brand/policy non generano revisioni perché non sono parametri NFC. Prima della nuova REQUEST si richiedono runtime e EEPROM coerenti, inclusa identità CDC commessa. Il reset completo verificato può commettere C3 prima del reboot. Il percorso Init utente usa `EE_InitWithNfc`: D7 prima dei default, E8 dopo verifica; il servizio NFC consuma E8 dopo verifica tag, mai applicando i vecchi valori JSON. UID/lock e tag estranei preservati.
+
+B6 dopo reboot: se ID/CRC/base e configurazione completa coincidono, commette solo metadata e ripubblica ACK; altrimenti recovery necessario e nessuna nuova applicazione. C3 interrotto e NF corrotto bloccano la sincronizzazione invece di ripristinare impostazioni obsolete. EEPROM in place non atomica: possibile configurazione parziale preservata, da recuperare esplicitamente. NF corrotto non viene azzerato neppure come effetto collaterale di Init Memory; serve manutenzione verificata.
+
+Host:68 tagli byte REQUEST multiparametro e24 Init,170 scenari I/O, replay/local save, preservazione legacy e mapping raw lwIP/BE verificati. Hardware: verificare brown-out reale, tempi pagina/ACK, riavvio in ogni fase, perdita bus e alimentazioni indipendenti MCU/tag. Nessun collaudo fisico dichiarato.
+
+## NFC: intervallo autorizzato e mapping verificato, 15 novembre 2026
+
+L’utente autorizza 16 byte 0x28..0x37; i percorsi EEPROM esaminati terminano a 0x27. I byte fisici possono essere indefiniti: non interpretarli come configurazione valida o autorizzazione a importare una vecchia richiesta. Nessun codice EEPROM è stato modificato nella fondazione offline.
+
+| Offset proposto | Campo | Dimensione |
+| --- | --- | ---: |
+| 28..29 | Discriminante NF | 2 |
+| 2A | Versione metadati | 1 |
+| 2B | Stato di commit/recupero, codici ancora da validare | 1 |
+| 2C..2F | Revisione configurazione SYNC | 4 |
+| 30..33 | Ultima richiesta associata | 4 |
+| 34..37 | CRC32 richiesta, non CRC della configurazione | 4 |
+
+Mappa 00..27 e versione struttura3 invariate; niente slot aggiuntivi. Schema/SHA-256 statici restano in flash, non in EEPROM. La sequenza fisica di commit e recupero non è ancora implementata o validata; la memoria in place non diventa atomica grazie ai soli 16 byte.
+
+Il modello host [protocol/nfc](../protocol/nfc/README.md) verifica che EEPROM salva BE il numero raw lwIP little-endian: 192.168.1.20 corrisponde ai byte legacy 14 01 A8 C0, mentre NFC trasmette C0 A8 01 14. DHCP attivo conserva IP/mask salvati; DNS usa indici0/1, route canonica SET ID0. Test per tutti i prefissi0..32, rifiuto di mask non contigua e conservazione byte00..02/18..7F. È una prova host, non un nuovo writer hardware né una migrazione eseguita.
+
 Data: 14 novembre 2026. Stato: baseline 480 MHz `0b5fa6c` e branding/migrazione struttura2 `1e71467` collaudati dall’utente. Nuovo incremento struttura3/ruolo DMX verificato con build e test host; collaudo fisico ancora da eseguire.
 
 ## Stato corrente: struttura 3 per il ruolo DMX
@@ -22,6 +73,8 @@ Le sezioni successive conservano l’analisi legacy e la precedente implementazi
 La successiva correzione dei reset Node e degli interrupt TX/RDM non cambia mappa, versione struttura, migrazione o contenuto EEPROM. La nuova query CDC `rdm?` è esclusivamente diagnostica e non effettua accessi I²C né scritture di configurazione. Non cancellare EEPROM per provare questa correzione.
 
 Aggiornamento15 novembre2026: la correzione RDM Node/PID rete non cambia versione3, mappa o migrazione. APPLY e SET gateway/DNS pubblicano ora i parametri comuni solo dopo il TC ACK; save aggregato dopo250 ms senza transazione RX/TX. Nessun nuovo parametro EEPROM. Statico e DHCP usano il solo selettore legacy: per abilitare DHCP da statico, inviare STATIC_ADDRESS=0/prefix0, DHCP_MODE=1, APPLY; la combinazione statica non nulla/DHCP attivo è rifiutata con NACK000B senza perdere i candidati. Verificati round-trip EEPROM di IP/mask/gateway/DNS non predefiniti e DHCP, restano power-cut fisici. Dettagli in AUDIT.md.
+
+Debug durata RDM (15 novembre2026): gestione MUTE/UN_MUTE, snapshot RX e diagnostica CDC non cambiano mappa/versione3 o migrazione EEPROM. Nessun timer di auto-default e nessuna nuova scrittura persistente introdotti. I nuovi contatori e il secondo snapshot sono soltanto RAM.
 
 ### Migrazione e recovery attuali
 
@@ -166,3 +219,15 @@ Riferimenti verificati: RSH7 usb_debug.c usa `brand?`, `brand=`, deadline assolu
 - [ ] Confermare BOM/page size, pannello e rendering dei tre brand sul display reale.
 
 Test riproducibili: `python3 tests/test_stabilization.py`; build: `python3 tests/test_stabilization.py --arm-build /tmp/adsw100-branding`. Nessun commit/tag automatico.
+
+Il rinvio RDM con USART BUSY (15 novembre 2026) conserva soltanto lo snapshot RAM fino a linea libera o deadline esistente; nessuna variazione della mappa, versione o politica di scrittura EEPROM.
+
+La correzione TIM7 ARR nullo (15 novembre 2026) modifica solo il minimo one-shot da1 a2 µs; nessuna variazione EEPROM, migrazione, default o salvataggio.
+
+Sessione RDM Node autorizzata il15 novembre2026: usa soltanto stati RAM, GET standard di mantenimento URC01 e lease ADSW100 esistente. Nessun nuovo campo, PID persistente, migrazione o modifica ai128 byte applicativi.
+
+Decisione corrente RDM Node30 s (15 novembre2026): cessione e timestamp risiedono soltanto in RAM e si azzerano al boot; attraversano i cambi ruolo senza modificare la mappa EEPROM. Versione, indirizzi, payload legacy e procedure di migrazione restano invariati. Il valore30 s e' una costante del driver, non un nuovo parametro persistente.
+
+Ripristino URC01 pre-Node richiesto dopo conferma hardware positiva ADSW10030 s: nessuna modifica alle configurazioni persistenti di ADSW100 o alle procedure EEPROM; il rollback riguarda solo logica controller/PHY e relativi test URC01, mantenendo IPv4.
+
+Assegnazione ID96 (15 novembre2026): Model ID RDM e codice uploader/Product futuro sono costanti firmware, non campi EEPROM. Nessuna migrazione, scrittura di configurazione o modifica dei seriali UID; struttura, brand e impostazioni legacy preservati.

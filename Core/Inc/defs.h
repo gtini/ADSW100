@@ -16,6 +16,10 @@
 #define FW_VERSION_MINOR   4
 #define FW_VERSION_PATCH   0
 
+/* Assegnazione utente 15/11/2026: codice uploader/Product ID futuro96.
+   Prenotazione distinta dal Model ID RDM; Target/layout boot da definire. */
+#define ADSW_UPLOADER_PRODUCT_ID 96u
+
 // Codice di sblocco
 #define UNLOCK_CODE_1	1
 #define UNLOCK_CODE_2	2

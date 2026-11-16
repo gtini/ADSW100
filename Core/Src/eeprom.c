@@ -4,6 +4,17 @@
 #include "h_files.h"
 #include "defs.h"
 
+volatile bool ee_nfc_bus_reserved;
+static bool nfc_transaction, nfc_local_live;
+static uint32_t nfc_local_at;
+/* Ultimo esito pubblico: sola RAM, nessuna lettura bus dalla CDC. */
+static HAL_StatusTypeDef ee_last_write_status;
+static uint16_t ee_last_write_address, ee_last_write_length;
+static uint8_t ee_last_meta_state;
+static int ee_last_meta_result;
+static uint32_t ee_write_attempts;
+
+
 uint8_t dmx_port_mode = DMX_PORT_IN;
 uint8_t g_netmask_bad = 0;   // 0 = ok, 1 = netmask sospetta/errata
 
@@ -64,15 +75,56 @@ HAL_StatusTypeDef EE_WriteU32(uint16_t addr, uint32_t v)
 HAL_StatusTypeDef EE_Read(uint16_t memAddr, uint8_t* buf, uint16_t len)
 {
     if (!buf) return HAL_ERROR;
+    if (ee_nfc_bus_reserved) return HAL_BUSY;
     if (memAddr > EE_SIZE || len > EE_SIZE - memAddr) return HAL_ERROR;
     return HAL_I2C_Mem_Read(&hi2c1, (EE_I2C_ADDR_7B << 1), memAddr,
                             I2C_MEMADD_SIZE_8BIT, buf, len, 100);
 }
 
-HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len)
+static HAL_StatusTypeDef EE_WriteImpl(uint16_t memAddr, const uint8_t* buf, uint16_t len)
 {
     if (!buf) return HAL_ERROR;
+    if (ee_nfc_bus_reserved) return HAL_BUSY;
     if (memAddr > 128u || len > 128u - memAddr) return HAL_ERROR;
+
+    /* Prima di qualunque scrittura locale, invalida la base NFC persistente.
+       Copre anche i setter EEPROM diretti del pannello, senza modificarli. */
+    if (memAddr < 0x28u && len && !nfc_transaction &&
+        !(memAddr >= EE_OFFS_BRAND && memAddr + len <= EE_OFFS_DMX_PORT_MODE) &&
+        !(memAddr == EE_OFFS_VERSION && len == 1))
+    {
+        ee_nfc_meta_t meta;
+        int valid = EE_NfcRead(&meta);
+        ee_last_meta_result = valid;
+        if (valid < 0) return HAL_ERROR;
+        if (valid > 0)
+        {
+            ee_last_meta_state = meta.state;
+            if (meta.state == EE_NFC_REQUEST || meta.state == EE_NFC_INIT_PREPARE) return HAL_BUSY;
+            bool resumed_local = meta.state == EE_NFC_LOCAL && !nfc_local_live;
+            if (resumed_local)
+            {
+                /* Nuova azione locale esplicita: non riprende una richiesta NFC.
+                   Verifica l'intera configurazione prima di aprire una nuova revisione. */
+                uint8_t saved[40];
+                if (EE_ReadConfigSnapshot(saved) != HAL_OK) return HAL_ERROR;
+            }
+            uint8_t old[40];
+            uint16_t count = len < 0x28u - memAddr ? len : 0x28u - memAddr;
+            if (EE_Read(memAddr, old, count) != HAL_OK) return HAL_ERROR;
+            if (resumed_local || (memcmp(old, buf, count) &&
+                (meta.state == EE_NFC_COMMITTED || meta.state == EE_NFC_INIT_TAG)))
+            {
+                meta.revision++;
+                if (!meta.revision) meta.revision = 1;
+                /* Un edit locale annulla il consenso Init tag pendente: mai pubblicare
+                   in seguito default precedenti sopra la nuova configurazione. */
+                meta.state = EE_NFC_LOCAL;
+                if (EE_NfcStore(&meta) != HAL_OK) return HAL_ERROR;
+                nfc_local_live = true;
+            }
+        }
+    }
 
     // 24AA02E48: page size = 8 byte
     const uint8_t page = 8;
@@ -98,7 +150,26 @@ HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len)
 
         off = (uint16_t)(off + chunk);
     }
+    if (memAddr < 0x28u && nfc_local_live && !nfc_transaction) nfc_local_at = HAL_GetTick();
     return HAL_OK;
+}
+
+HAL_StatusTypeDef EE_Write(uint16_t memAddr, const uint8_t* buf, uint16_t len)
+{
+    HAL_StatusTypeDef status = EE_WriteImpl(memAddr, buf, len);
+    ee_last_write_address = memAddr;
+    ee_last_write_length = len;
+    ee_last_write_status = status;
+    ++ee_write_attempts;
+    return status;
+}
+
+void EE_FormatDiagnostics(char *out, size_t capacity)
+{
+    snprintf(out, capacity, "ee writes=%lu addr=%02X len=%u rc=%u reserved=%u transaction=%u local=%u meta_rc=%d meta=%02X\r\n",
+             (unsigned long)ee_write_attempts, ee_last_write_address, ee_last_write_length,
+             ee_last_write_status, ee_nfc_bus_reserved, nfc_transaction, nfc_local_live,
+             ee_last_meta_result, ee_last_meta_state);
 }
 
 // Legge MAC-48 dalla 24AA02E48 (indirizzi 0xFA..0xFF)
@@ -382,7 +453,16 @@ static HAL_StatusTypeDef EE_StoreConfig(bool defaults, bool preserve_identity)
     }
     st = EE_Read(0, verify, sizeof verify);
     if (st != HAL_OK) return st;
-    return memcmp(b, verify, sizeof b) == 0 ? HAL_OK : HAL_ERROR;
+    if (memcmp(b, verify, sizeof b)) return HAL_ERROR;
+    if (defaults && nfc_local_live && !nfc_transaction)
+    {
+        /* Reset esplicito verificato: commette la revisione prima del reboot. */
+        ee_nfc_meta_t meta;
+        if (EE_NfcRead(&meta) != 1 || meta.state != EE_NFC_LOCAL) return HAL_ERROR;
+        meta.state = EE_NFC_COMMITTED;
+        if (EE_NfcStore(&meta) != HAL_OK) return HAL_ERROR;
+    }
+    return HAL_OK;
 }
 
 /* Solo factory reset esplicito: nessun richiamo automatico dal load. */
@@ -498,4 +578,94 @@ void EE_DumpTail(void)
     uint8_t mac[6]={0}; st = EE_Read(0xFA, mac, 6);
     USB_Printf("E48 @0xFA..0xFF (st=%d): %02X:%02X:%02X:%02X:%02X:%02X\n",
                st, mac[0],mac[1],mac[2],mac[3],mac[4],mac[5]);
+}
+
+/* Metadati NFC indipendenti dalla versione/mappa legacy. Nessuna scrittura su lettura. */
+int EE_NfcRead(ee_nfc_meta_t *meta)
+{
+    uint8_t b[16];
+    if (!meta || EE_Read(0x28, b, sizeof b) != HAL_OK) return -1;
+    if (b[0] != 'N' || b[1] != 'F') return 0;
+    if (b[2] != 1 || (b[3] != EE_NFC_COMMITTED && b[3] != EE_NFC_REQUEST && b[3] != EE_NFC_LOCAL && b[3] != EE_NFC_INIT_PREPARE && b[3] != EE_NFC_INIT_TAG)) return -1;
+    meta->state = b[3];
+    meta->revision = EE_U32(b + 4);
+    meta->request = EE_U32(b + 8);
+    meta->crc = EE_U32(b + 12);
+    return meta->revision ? 1 : -1;
+}
+
+/* Invalida prima, scrive corpo/readback, sigilla per ultimo. Un taglio ambiguo
+   lascia NF riconoscibile ma non valido: nessuna inizializzazione automatica. */
+HAL_StatusTypeDef EE_NfcStore(const ee_nfc_meta_t *meta)
+{
+    uint8_t b[16] = {'N', 'F', 1, 0};
+    if (!meta || !meta->revision || (meta->state != EE_NFC_COMMITTED &&
+        meta->state != EE_NFC_REQUEST && meta->state != EE_NFC_LOCAL &&
+        meta->state != EE_NFC_INIT_PREPARE && meta->state != EE_NFC_INIT_TAG)) return HAL_ERROR;
+    EE_Put32(b + 4, meta->revision);
+    EE_Put32(b + 8, meta->request);
+    EE_Put32(b + 12, meta->crc);
+    if (EE_WriteU8(0x2B, 0) != HAL_OK || EE_Write(0x28, b, sizeof b) != HAL_OK ||
+        EE_WriteU8(0x2B, meta->state) != HAL_OK) return HAL_ERROR;
+    ee_nfc_meta_t verify;
+    if (EE_NfcRead(&verify) != 1 || verify.state != meta->state || verify.revision != meta->revision ||
+        verify.request != meta->request || verify.crc != meta->crc) return HAL_ERROR;
+    if (meta->state == EE_NFC_COMMITTED) nfc_local_live = false;
+    return HAL_OK;
+}
+
+void EE_NfcTransaction(bool active)
+{
+    nfc_transaction = active;
+}
+
+bool EE_NfcLocalLive(void)
+{
+    return nfc_local_live;
+}
+
+/* Legge soltanto una configurazione già commessa: mai migrazione o pubblicazione RAM. */
+HAL_StatusTypeDef EE_ReadConfigSnapshot(uint8_t b[40])
+{
+    uint8_t stored_brand, code;
+    if (!b || EE_Read(0, b, 40) != HAL_OK || !EE_LegacyValid(b) || b[2] != EE_CFG_VERSION ||
+        (b[EE_OFFS_DMX_PORT_MODE] & 0xFCu) != EE_DMX_PORT_TAG || (b[EE_OFFS_DMX_PORT_MODE] & 3u) > 2 ||
+        EE_ReadIdentity(&stored_brand, &code) != HAL_OK) return HAL_ERROR;
+    return HAL_OK;
+}
+
+uint32_t EE_NfcLocalAt(void)
+{
+    return nfc_local_at;
+}
+
+/* Una transizione di solo stato non riscrive corpo, revisione o ID richiesta. */
+HAL_StatusTypeDef EE_NfcSeal(const ee_nfc_meta_t *expected, uint8_t state)
+{
+    ee_nfc_meta_t current;
+    if (!expected || (state != EE_NFC_COMMITTED && state != EE_NFC_INIT_TAG) ||
+        EE_NfcRead(&current) != 1 || current.state != expected->state ||
+        current.revision != expected->revision || current.request != expected->request ||
+        current.crc != expected->crc) return HAL_ERROR;
+    if (EE_WriteU8(0x2B, state) != HAL_OK || EE_NfcRead(&current) != 1 || current.state != state) return HAL_ERROR;
+    return HAL_OK;
+}
+
+/* Solo Init esplicito: prepara prima dei default, abilita il tag solo dopo
+   readback della configurazione. Un PREPARE interrotto non autorizza il boot. */
+HAL_StatusTypeDef EE_InitWithNfc(bool preserve_identity)
+{
+    ee_nfc_meta_t meta = {0};
+    int valid = EE_NfcRead(&meta);
+    if (valid < 0) return HAL_ERROR;
+    meta.revision++;
+    if (!meta.revision) meta.revision = 1;
+    meta.state = EE_NFC_INIT_PREPARE;
+    if (EE_NfcStore(&meta) != HAL_OK) return HAL_ERROR;
+    nfc_local_live = false;
+    EE_NfcTransaction(true);
+    HAL_StatusTypeDef st = preserve_identity ? EE_ResetUserMemory() : EE_InitMemory();
+    EE_NfcTransaction(false);
+    if (st != HAL_OK) return st;
+    return EE_NfcSeal(&meta, EE_NFC_INIT_TAG);
 }

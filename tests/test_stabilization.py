@@ -154,6 +154,9 @@ static struct {uint32_t DEMCR;} debug_registers;
 static struct {uint32_t CR1,ARR,CNT,EGR,SR,DIER,PSC;} tim7_registers;
 #define TIM7 (&tim7_registers)
 #define TIM7_IRQn 55
+#define USART1_IRQn 37
+static uint32_t NVIC_GetEnableIRQ(int irq) {(void)irq;return 1u;}
+static uint32_t NVIC_GetPendingIRQ(int irq) {(void)irq;return 0u;}
 #define TIM_EGR_UG 1u
 #define TIM_DIER_UIE 1u
 #define TIM_CR1_URS 4u
@@ -185,7 +188,7 @@ static struct {uint32_t CR1,ARR,CNT,EGR,SR,DIER,PSC;} tim7_registers;
 #define LCD_BL_Pin 4096u
 typedef struct {uint32_t Pin,Mode,Speed,Alternate;} GPIO_InitTypeDef;
 static bool line_high=true;
-static GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p,uint16_t pin) {(void)p;(void)pin;return line_high?GPIO_PIN_SET:GPIO_PIN_RESET;}
+static GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *p,uint16_t pin) {(void)p;if(pin==RDM_DIR_Pin)return coils&pin?GPIO_PIN_SET:GPIO_PIN_RESET;return line_high?GPIO_PIN_SET:GPIO_PIN_RESET;}
 static void HAL_GPIO_Init(GPIO_TypeDef *p,GPIO_InitTypeDef *pin) {(void)p;(void)pin;}
 #define __HAL_RCC_TIM7_CLK_ENABLE() ((void)0)
 static uint32_t HAL_RCC_GetPCLK1Freq(void) {return 120000000;}
@@ -458,7 +461,13 @@ static USBD_CDC_HandleTypeDef cdc;
 USBD_HandleTypeDef hUsbDeviceFS={USBD_STATE_CONFIGURED,&cdc};
 static char sent[256];
 static unsigned tx_calls;
+static bool mock_nfc_enabled=true;
+void NFC_SetEnabled(bool enabled) {mock_nfc_enabled=enabled;}
+void NFC_FormatLiveDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"i2c=mock\r\n");}
+void NFC_FormatBusDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"i2c=mock\r\n");}
+void NFC_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"nfc=mock\r\n");}
 void RDM_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"rdm=1 uid=17FA:A3010203 rx=0 late=0\r\n");}
+void DMX512_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"ms=30000 tx=0 bus=0 pending=0 de=0\r\n");}
 static uint8_t CDC_Transmit_FS(uint8_t *b,uint16_t n) {
  if(cdc.TxState)return USBD_BUSY;
  assert(n<sizeof sent);memcpy(sent,b,n);sent[n]=0;cdc.TxState=1;tx_calls++;return USBD_OK;
@@ -475,6 +484,12 @@ int main(void) {
  memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
  assert(brand==BRAND_AXN && menu_code_required==0);tick=1;
  command("brand?\r\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
+ unsigned diagnostic_writes=writes;
+ command("nfc=0\n","OK VOLATILE CHECK i2c?\r\n");assert(!mock_nfc_enabled);
+ command("i2c?\n","i2c=mock\r\n");
+ char ee_diag[256];EE_FormatDiagnostics(ee_diag,sizeof ee_diag);command("ee?\n",ee_diag);
+ command("nfc=1\n","OK VOLATILE CHECK i2c?\r\n");assert(mock_nfc_enabled && writes==diagnostic_writes);
+
  command("brand=1\n","OK REBOOT\r\n");assert(brand==BRAND_AXN && menu_code_required==0);
  command("brand?\n","brand=1\r\n");command("menu_code?\n","menu_code=1\r\n");
  command("menu_code=0\n","OK REBOOT\r\n");command("menu_code?\n","menu_code=0\r\n");
@@ -496,6 +511,7 @@ int main(void) {
  command("brand=2\n","LOCKED\r\n");command("menu_code=1\n","LOCKED\r\n");
  command("brand?\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
  command("rdm?\n","rdm=1 uid=17FA:A3010203 rx=0 late=0\r\n");
+ command("rdm_phy?\n","ms=30000 tx=0 bus=0 pending=0 de=0\r\n");
  hUsbDeviceFS.dev_state=0;USB_ServiceTask();hUsbDeviceFS.dev_state=USBD_STATE_CONFIGURED;
  tick=1;command("brand=1\n","LOCKED\r\n"); /* Simula wrap: finestra non riaperta. */
  /* BUSY non perde la risposta e non permette a log di scavalcarla. */
@@ -516,7 +532,13 @@ static UART_Registers registers;
 static UART_HandleTypeDef uart={.Instance=&registers};
 static uint64_t time_us;
 static void advance_us(unsigned us) {time_us+=us;DWT->CYCCNT=(uint32_t)(time_us*480u);tick=(uint32_t)(time_us/1000);}
-static void timer(void) {unsigned period=TIM7->ARR+1;advance_us(period);TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();}
+/* STM32: ARR=0 ferma il contatore, anche con CEN=1; OPM spegne CEN a UIF. */
+static void timer(void) {
+ if(!(TIM7->CR1&TIM_CR1_CEN) || !TIM7->ARR){advance_us(1000);return;}
+ unsigned period=TIM7->ARR+1;advance_us(period);TIM7->CNT=0;
+ if(TIM7->CR1&TIM_CR1_OPM)TIM7->CR1&=~TIM_CR1_CEN;
+ TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();
+}
 static void receive(unsigned flags,unsigned value) {registers.ISR=flags;registers.RDR=value;DMX512UARTInterrupt(&uart);registers.ISR&=~USART_ISR_RXNE_RXFNE;}
 static void finish_tx(void) {
  unsigned guard=0;
@@ -540,11 +562,181 @@ static void wire_transact(unsigned pid,unsigned cc,const uint8_t *payload,unsign
  for(unsigned i=0;i<length;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);}
  DMX512_Service();assert(tx_state);finish_tx();assert(RDM_PacketValid(tx_data,tx_count));
 }
+
+/* Invio reale ISR, con TN che attraversa il wrap a 8 bit. */
+static uint8_t soak_tn;
+static void soak_receive(unsigned pid,unsigned cc,const uint8_t *payload,unsigned count,bool broadcast) {
+ unsigned n=build(pid,cc,payload,count,broadcast);request[15]=soak_tn++;
+ uint16_t sum=0;for(unsigned i=0;i<request[2];i++)sum+=request[i];PutWord(request+request[2],sum);
+ advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,request[i]);}
+ DMX512_Service();
+}
+static void discovery_cycle(void) {
+ uint8_t range[12]={0};memset(range+6,255,6);
+ soak_receive(3,0x10,NULL,0,true);assert(!muted && !tx_state);
+ soak_receive(1,0x10,range,12,true);assert(tx_state==5);finish_tx();assert(tx_count==24);
+ soak_receive(2,0x10,NULL,0,false);assert(tx_state);finish_tx();assert(muted);
+ assert((registers.CR1&USART_CR1_RE) && (registers.CR1&USART_CR1_RXNEIE_RXFNEIE) && !(coils&RDM_DIR_Pin));
+}
+static void rdm_long_run(void) {
+ setbuf(stdout,NULL);
+ dmx_port_mode=0;InitDMX512(&uart);RDM_Init();time_us=0;advance_us(0);
+ advance_us(600000000);discovery_cycle();
+ assert(tick>=600000);printf("RDM SOAK quiet: uptime=%lu ms, discovery OK after 10 minutes\n",(unsigned long)tick);
+ advance_us(600000000);DMX512_Service();assert(muted);discovery_cycle();
+ printf("RDM SOAK muted idle: UN_MUTE works after another 10 minutes, no automatic mute reset\n");
+ time_us=0;advance_us(0);InitDMX512(&uart);RDM_Init();
+ for(unsigned second=0;second<600;second++) {
+  advance_us(1000000);DMX512_Service();
+  if(second%3==0)discovery_cycle();
+  soak_receive(0x0060,0x20,NULL,0,false);assert(tx_state);finish_tx();
+ }
+ assert(tick>=600000);printf("RDM SOAK periodic: uptime=%lu ms, requests=%lu, discovery cycles=200 OK\n",(unsigned long)tick,(unsigned long)valid_requests);
+ /* DMX continuo e discovery sullo stesso ingresso per oltre dieci minuti. */
+ time_us=0;advance_us(0);InitDMX512(&uart);RDM_Init();
+ for(unsigned frame=0;frame<15000;frame++) {
+  advance_us(176);receive(USART_ISR_FE,0);advance_us(16);receive(USART_ISR_RXNE_RXFNE,0);
+  for(unsigned slot=0;slot<512;slot++){advance_us(44);receive(USART_ISR_RXNE_RXFNE,(uint8_t)(frame+slot));}
+  advance_us(176);receive(USART_ISR_FE,0);DMX512_Service();
+  assert(dmxRxCount==512 && dmx_timeout && dmxRxBuffer[0]==(uint8_t)frame);
+  assert((registers.CR1&USART_CR1_RE) && (registers.CR1&USART_CR1_RXNEIE_RXFNEIE) && !(coils&RDM_DIR_Pin));
+  if(frame%75==0)discovery_cycle();
+  advance_us(18000);DMX512_Service();
+ }
+ assert(tick>=600000);printf("DMX/RDM SOAK mixed: uptime=%lu ms, 15000 DMX frames and 200 discovery cycles OK\n",(unsigned long)tick);
+ time_us=0;advance_us(0);InitDMX512(&uart);RDM_Init();
+ for(unsigned i=0;i<70000;i++) {
+  uint8_t address[2]={0,(uint8_t)(1+i%200)};
+  soak_receive(0x00F0,(i&1)?0x20:0x30,(i&1)?NULL:address,(i&1)?0:2,false);assert(tx_state);finish_tx();
+  if(i%1000==0)discovery_cycle();
+ }
+ assert(valid_requests>65536);printf("RDM SOAK volume: uptime=%lu ms, requests=%lu, TN and 16-bit thresholds crossed OK\n",(unsigned long)tick,(unsigned long)valid_requests);
+ time_us=((uint64_t)UINT32_MAX-2000u)*1000u;advance_us(0);InitDMX512(&uart);RDM_Init();
+ for(unsigned i=0;i<2000;i++) {soak_receive(0x0060,0x20,NULL,0,false);assert(tx_state);finish_tx();}
+ assert(tick<10000u);discovery_cycle();printf("RDM SOAK tick wrap: HAL_GetTick wrap and discovery OK\n");
+ /* Pacchetto completo con BUSY transitorio: conservare la richiesta
+    fino alla linea libera senza perdere discovery, GET o SET. Gli 8 us
+    sono uno stimolo del mock, non una misura dei bit di stop hardware. */
+ time_us=0;advance_us(0);InitDMX512(&uart);RDM_Init();
+ for(unsigned attempt=0;attempt<100;attempt++) {
+  uint8_t address[2]={0,77},range[12]={0};memset(range+6,255,6);
+  unsigned kind=attempt%3;
+  unsigned bytes=build(kind==2?1:kind?0x00F0:0x0060,kind==2?0x10:kind?0x30:0x20,
+                       kind==2?range:kind?address:NULL,kind==2?12:kind?2:0,kind==2);
+  advance_us(200);receive(USART_ISR_FE,0);
+  for(unsigned i=0;i<bytes;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE | (i+1==bytes?USART_ISR_BUSY:0),request[i]);}
+  uint32_t valid_before=valid_requests,deferred_before=rx_deferred;
+  DMX512_Service();assert(!tx_state && rdm_ready && valid_requests==valid_before && rx_deferred==deferred_before+1);
+  advance_us(8);registers.ISR=0;DMX512_Service();assert(tx_state);finish_tx();
+ }
+ /* BUSY che persiste oltre la deadline: niente risposta tardiva o blocco. */
+ unsigned busy_bytes=build(0x0060,0x20,NULL,0,false);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<busy_bytes;i++){advance_us(44);receive(USART_ISR_RXNE_RXFNE | (i+1==busy_bytes?USART_ISR_BUSY:0),request[i]);}
+ DMX512_Service();assert(rdm_ready);advance_us(5000);DMX512_Service();assert(!rdm_ready && !tx_state);
+ registers.ISR=0;soak_receive(0x0060,0x20,NULL,0,false);assert(tx_state);finish_tx();
+ printf("RDM BUSY pending: 100 GET/SET/discovery retained until idle, timeout and retry recovered\n");
+ /* Oracolo del difetto: UN_MUTE senza risposta, poi nuovo BREAK prima del main. */
+ discovery_cycle();assert(muted);
+ unsigned n=build(3,0x10,NULL,0,true);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ assert(rdm_ready);advance_us(200);receive(USART_ISR_FE,0);receive(8,0xCC);
+ DMX512_Service();assert(!muted); /* Deve agire anche se non puo' rispondere. */
+ receive(USART_ISR_ORE,0);DMX512_Service();
+ discovery_cycle();assert(muted);
+ n=build(3,0x10,NULL,0,true);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ advance_us(5000);DMX512_Service();assert(!muted); /* Broadcast senza deadline di risposta. */
+ printf("RDM regression: delayed/pipelined broadcast UN_MUTE recovered without reset\n");
+ discovery_cycle();assert(muted);
+ /* Due pacchetti completi prima del main: vecchio GET e successivo UN_MUTE. */
+ n=build(0x0060,0x20,NULL,0,false);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ n=build(3,0x10,NULL,0,true);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ DMX512_Service();if(tx_state)finish_tx();DMX512_Service();assert(!muted);
+ receive(USART_ISR_ORE,0);DMX512_Service();discovery_cycle();assert(muted);
+ uint32_t dropped_before=rx_dropped;
+ for(unsigned queued=0;queued<3;queued++) {
+  uint8_t range[12]={0};memset(range+6,255,6);
+  n=build(queued<2?3:1,0x10,queued<2?NULL:range,queued<2?0:12,true);
+  advance_us(200);receive(USART_ISR_FE,0);
+  for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ }
+ assert(rx_dropped==dropped_before+1);
+ DMX512_Service();DMX512_Service();assert(!muted && !rdm_ready && !rdm_next_ready);
+ discovery_cycle();printf("RDM FIFO: two UN_MUTE retained, third packet counted, discovery retry OK\n");
+ n=build(3,0x10,NULL,0,false);advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ advance_us(5000);DMX512_Service();assert(!muted && !tx_state);
+ receive(USART_ISR_ORE,0);discovery_cycle();assert(muted);
+ n=build(3,0x10,NULL,0,true);request[n-1]^=1;advance_us(200);receive(USART_ISR_FE,0);
+ for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+ DMX512_Service();assert(muted && !tx_state);discovery_cycle();
+ printf("RDM control: late unicast changes mute without late ACK; invalid checksum never unmutes\n");
+}
+/* Nessun keepalive specifico del controller: pausa operatore, rinnovo e recovery. */
+static void rdm_controller_hold_tests(void) {
+ for(unsigned node=1;node<=2;node++) {
+  time_us=1000000;advance_us(0);InitDMX512(&uart);RDM_Init();dmx_port_mode=node;DMX512_Service();
+  wire_transact(0x0060,0x20,NULL,0);assert(rdm_controller_seen);
+  advance_us(10000000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();
+  assert(!tx_state && !(coils&RDM_DIR_Pin));
+  uint8_t a[2]={0,79};wire_transact(0x00F0,0x30,a,2);wire_transact(0x00F0,0x20,NULL,0);
+  assert(Word(tx_data+24)==79);uint32_t stamp=rdm_controller_at;
+  advance_us(29000000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state);
+  /* CRC errato non riapre i30 s; resta solo la guardia di attivita' RX. */
+  unsigned n=build(0x0060,0x20,NULL,0,false);request[n-1]^=1;
+  receive(USART_ISR_FE,0);for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+  DMX512_Service();assert(!tx_state && rdm_controller_at==stamp);
+  advance_us(1010000);DMX512_Service();line_high=0;
+  TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state && !rdm_controller_seen);
+  line_high=1;registers.ISR=USART_ISR_BUSY;
+  TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state);
+  registers.ISR=0;TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();
+  assert(tx_state==1);finish_tx();assert(tx_count==513);
+  /* Richiesta a cavallo della scadenza: stato RX protetto, poi rinnovo. */
+  wire_transact(0x0060,0x20,NULL,0);stamp=rdm_controller_at;
+  advance_us((29999u-(tick-stamp))*1000u);
+  n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
+  advance_us(44);receive(8,request[0]);advance_us(44);receive(8,request[1]);
+  advance_us(1500);TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();
+  assert(!tx_state && bus_state==BUS_RDM_RX);
+  for(unsigned i=2;i<n;i++){advance_us(44);receive(8,request[i]);}
+  DMX512_Service();assert(tx_state);finish_tx();assert(rdm_controller_seen && rdm_controller_at!=stamp);
+  uint8_t role=0;wire_transact(PID_DMX_PORT_MODE,0x30,&role,1);DMX512_Service();assert(applied_port==0);
+  role=node;wire_transact(PID_DMX_PORT_MODE,0x30,&role,1);DMX512_Service();
+  assert(applied_port==node && rdm_controller_seen);
+  advance_us(2100000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state);
+  /* Header incompleto o errore UART senza messaggio valido non rinnova. */
+  InitDMX512(&uart);RDM_Init();dmx_port_mode=node;DMX512_Service();advance_us(2100000);
+  receive(USART_ISR_FE,0);receive(8,0xCC);receive(8,1);
+  TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state && !rdm_controller_seen);
+  receive(USART_ISR_ORE,0);advance_us(40000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();
+  assert(tx_state==1);finish_tx();
+ }
+ /* Scadenza monotona oltre il wrap di HAL_GetTick. */
+ time_us=((uint64_t)UINT32_MAX-10000u)*1000u;advance_us(0);
+ InitDMX512(&uart);RDM_Init();dmx_port_mode=1;DMX512_Service();wire_transact(0x0060,0x20,NULL,0);
+ advance_us(15000000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state && rdm_controller_seen);
+ advance_us(15100000);DMX512_Service();TIM7->SR|=TIM_SR_UIF;TIM7_IRQHandler();assert(tx_state==1 && !rdm_controller_seen);finish_tx();
+ puts("Node RDM hold30s: both Nodes, no keepalive, 10s pause + SET/GET, renewal, invalid CRC, expiry during RX, role change, UART recovery and tick wrap PASS");
+}
 int main(void) {
  memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
  uint8_t eui[]={0,4,0xA3,1,2,3};memcpy(memory+0xFA,eui,6);RDM_Init();assert(RDM_Enabled());
  assert(uid[0]==0x17 && uid[1]==0xFA && uid[2]==0xA3 && uid[5]==3);
  InitDMX512(&uart);
+ /* Risposte nella finestra valida, incluse le soglie che richiedevano
+    TimerArm(1): nessun ARR nullo e RX ripristinata dopo TC. */
+ uint8_t timer_probe[2]={0xFE,0xAA};unsigned delays[]={0,1,198,199,200,201,500,1790};
+ for(unsigned discovery=0;discovery<2;discovery++)for(unsigned i=0;i<sizeof delays/sizeof delays[0];i++) {
+  registers.ISR=0;uint32_t end=DMX512_Cycles();advance_us(delays[i]);
+  assert(DMX512_SendPacket(timer_probe,2,discovery!=0,end));
+  if(!TIM7->ARR)printf("RDM TIMER BLOCK: delay=%u discovery=%u tx=%u CR1=%lX DIER=%lX SR=%lX ARR=%lu\n",delays[i],discovery,tx_state,(unsigned long)TIM7->CR1,(unsigned long)TIM7->DIER,(unsigned long)TIM7->SR,(unsigned long)TIM7->ARR);
+  assert(TIM7->ARR>=1);finish_tx();assert(!tx_state && !(coils&RDM_DIR_Pin) && (registers.CR1&USART_CR1_RE));
+ }
+ printf("RDM TIMER: 16 turnaround cases including 199/200 us complete and return RX\n");
  /* Richiesta NVIC spuria: non può anticipare turnaround/BREAK/MAB. */
  uint8_t probe[2]={0xFE,0xAA};assert(DMX512_SendPacket(probe,2,true,DMX512_Cycles()));
  assert((TIM7->CR1&TIM_CR1_URS) && timer_pending_clears);
@@ -554,7 +746,8 @@ int main(void) {
  assert(!(registers.ISR&(USART_ISR_FE|USART_ISR_NE|USART_ISR_ORE)) && tx_state==3);
  finish_tx();assert(!TIM7->DIER && !(TIM7->CR1&TIM_CR1_CEN));
  TIM7->SR=TIM_SR_UIF;TIM7_IRQHandler();assert(!tx_state);TIM7->SR=0;
- for(unsigned b=0;b<3;b++){brand=b;transact(0x0081,0x20,NULL,0);assert(tx_data[23]==strlen(Brand_Current()->manufacturer) && !memcmp(tx_data+24,Brand_Current()->manufacturer,tx_data[23]));transact(0x0080,0x20,NULL,0);assert(!memcmp(tx_data+24,Brand_Current()->model,tx_data[23]));}brand=0;
+ for(unsigned b=0;b<3;b++){brand=b;transact(0x0081,0x20,NULL,0);assert(tx_data[23]==strlen(Brand_Current()->manufacturer) && !memcmp(tx_data+24,Brand_Current()->manufacturer,tx_data[23]));transact(0x0080,0x20,NULL,0);assert(!memcmp(tx_data+24,Brand_Current()->model,tx_data[23]));transact(0x0060,0x20,NULL,0);assert(Word(tx_data+26)==96u && tx_data[26]==0 && tx_data[27]==0x60);}brand=0;
+ assert(ADSW_UPLOADER_PRODUCT_ID==96u);
  transact(0x0060,0x20,NULL,0);assert(tx_data[16]==0 && tx_data[23]==19 && Word(tx_data+26)==ADSW_RDM_MODEL_ID && Word(tx_data+34)==12);
  transact(0x0081,0x20,NULL,0);assert(tx_data[23]==strlen(Brand_Current()->manufacturer));
  uint8_t address[]={1,0xF0};transact(0x00F0,0x30,address,2);assert(dmx_address==496 && tx_data[16]==0);
@@ -596,7 +789,7 @@ int main(void) {
  uint32_t before_ip=ip_address;net[8]=33;transact(0x0706,0x30,net,9);assert(tx_data[16]==2 && ip_address==before_ip);
  uint8_t dns[5]={0,8,8,4,4};transact(0x070B,0x30,dns,5);transact(0x070B,0x20,dns,1);assert(tx_data[16]==0 && memcmp(tx_data+24,dns,5)==0);
  uint8_t role=1;transact(PID_DMX_PORT_MODE,0x30,&role,1);assert(dmx_port_mode==1);DMX512_Service();assert(applied_port==1);
- dmx_address=1;InitRelay();art_levels[0]=201;art_levels[511]=99;advance_us(2100000);DMX512_Service();timer();assert(tx_state==1 && (coils&RDM_DIR_Pin));
+ dmx_address=1;InitRelay();art_levels[0]=201;art_levels[511]=99;advance_us(30100000);DMX512_Service();timer();assert(tx_state==1 && (coils&RDM_DIR_Pin));
  RelayTask();assert(active_proto==1 && (relay_target_mask&1));
  finish_tx();assert(tx_data[0]==0 && tx_data[1]==201 && tx_data[512]==99 && tx_count==513);
  art_valid=false;DMX512_Service();advance_us(30000);timer();finish_tx();assert(tx_data[1]==0 && tx_data[512]==0);
@@ -627,7 +820,7 @@ int main(void) {
  assert(CFG_SetValue(CFG_DMX_PORT_MODE,2));assert(EE_SaveConfig()==HAL_OK);dmx_port_mode=0;assert(EE_LoadConfig()==HAL_OK && dmx_port_mode==2);
  memory[0x27]=0xB3;assert(EE_LoadConfig()==HAL_ERROR);memory[0x27]=0xB0;
  /* TX guasto non lascia il driver abilitato senza limite. */
- dmx_port_mode=1;DMX512_Service();advance_us(2100000);DMX512_Service();advance_us(2100000);DMX512_Service();timer();timer();timer();assert(tx_state==3);
+ dmx_port_mode=1;DMX512_Service();advance_us(30100000);DMX512_Service();timer();timer();timer();assert(tx_state==3);
  timer();assert(tx_state==0 && !(coils&RDM_DIR_Pin) && tx_faults);
 
  /* GET/SET reali dal framing UART, consecutivi, in IN e in entrambi i Node. */
@@ -651,7 +844,7 @@ int main(void) {
    assert(RDM_PacketValid(tx_data,tx_count) && tx_data[16]==0 && tx_data[20]==(setting?0x31:0x21));
    if(!setting)assert(Word(tx_data+24)==19+k); /* GET subito dopo il SET precedente. */
   }
-  if(mode){advance_us(2100000);DMX512_Service();timer();assert(tx_state==1);finish_tx();assert(tx_count==513 && tx_data[0]==0);}
+  if(mode){advance_us(30100000);DMX512_Service();timer();assert(tx_state==1);finish_tx();assert(tx_count==513 && tx_data[0]==0);}
  }
  /* SET ruolo seguito dal GET prima del cambio hardware: il pacchetto non va scartato. */
  for(unsigned mode=0;mode<3;mode++) {
@@ -666,7 +859,7 @@ int main(void) {
  receive(USART_ISR_FE,0);receive(8,0xCC);receive(USART_ISR_ORE,0);assert(bus_state==BUS_IDLE && !tx_state);
  n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
  for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
- assert(rdm_ready);advance_us(2100);timer();assert(!rdm_ready && bus_state==BUS_IDLE);
+ assert(rdm_ready);advance_us(2100);timer();assert(rdm_ready && bus_state==BUS_IDLE);DMX512_Service();assert(!rdm_ready && !tx_state);
  /* Un nuovo BREAK dopo un pacchetto pendente non permette la vecchia risposta. */
  n=build(0x0060,0x20,NULL,0,false);receive(USART_ISR_FE,0);
  for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
@@ -705,8 +898,42 @@ int main(void) {
  advance_us(300000);RDM_Task();assert(!RDM_SavePending());
  uint32_t keep_ip=ip_address,keep_gateway=gateway,keep_dns1=dns1,keep_dns2=dns2,keep_mask=net_mask;
  assert(EE_LoadConfig()==HAL_OK && ip_address==keep_ip && gateway==keep_gateway && dns1==keep_dns1 && dns2==keep_dns2 && net_mask==keep_mask && use_dhcp==1);
+
+ /* Node separato dal problema mute: nessuna ricezione mentre DE guida il frame. */
+ for(unsigned node=1;node<=2;node++) {
+  InitDMX512(&uart);RDM_Init();dmx_port_mode=node;DMX512_Service();advance_us(2100000);DMX512_Service();
+  timer();timer();timer();assert(tx_state==3 && (coils&RDM_DIR_Pin));
+  uint16_t old_address=dmx_address;uint8_t address_in_tx[2]={0,77};
+  n=build(0x00F0,0x30,address_in_tx,2,false);receive(USART_ISR_FE,0);
+  for(unsigned i=0;i<n;i++){advance_us(44);receive(8,request[i]);}
+  assert(!rdm_ready && tx_state==3 && dmx_address==old_address);finish_tx();
+  wire_transact(0x00F0,0x30,address_in_tx,2);assert(dmx_address==77 && bus_state==BUS_IDLE);
+  wire_transact(0x00F0,0x20,NULL,0);assert(Word(tx_data+24)==77);
+ }
+ printf("RDM Node topology: requests during own TX ignored; GET/SET in RX complete at TC for both Nodes\n");
+ /* Sessione coordinata: il Manager rinnova con GET standard ogni500 ms.
+    Dieci minuti per ciascun Node, senza trasmissioni autonome nella sessione. */
+ for(unsigned node=1;node<=2;node++) {
+  InitDMX512(&uart);RDM_Init();dmx_port_mode=node;DMX512_Service();
+  for(unsigned heartbeat=0;heartbeat<1200;heartbeat++) {
+   advance_us(500000);wire_transact(0x0060,0x20,NULL,0);
+   DMX512_Service();timer();assert(!tx_state && !(coils&RDM_DIR_Pin));
+  }
+  uint8_t session_address[2]={0,78};wire_transact(0x00F0,0x30,session_address,2);
+  wire_transact(0x00F0,0x20,NULL,0);assert(Word(tx_data+24)==78);
+  /* Chiusura/scollegamento del controller: scade il lease, riparte un frame intero. */
+  advance_us(30100000);DMX512_Service();timer();assert(tx_state==1);finish_tx();
+  assert(tx_count==513 && !tx_state);
+  uint8_t input_role=0;wire_transact(PID_DMX_PORT_MODE,0x30,&input_role,1);DMX512_Service();
+  assert(applied_port==0 && dmx_port_mode==0 && !(coils&RDM_DIR_Pin));
+ }
+ puts("Node management session: 10 minutes per Node with 500ms GET, SET/readback, timeout resumes full DMX frame, return IN OK");
+ rdm_controller_hold_tests();
+ rdm_long_run();
  /* Un EUI non nel dominio noto disabilita soltanto RDM, mai UID di fallback. */
- char diagnostic[64];RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=1 uid=17FA:A3010203") && late_requests==1);
+ char phy[256];uint32_t saved_cr1=registers.CR1;unsigned saved_bus=bus_state;
+ DMX512_FormatDiagnostics(phy,sizeof phy);assert(strstr(phy,"ms=") && strstr(phy,"cr1=") && registers.CR1==saved_cr1 && bus_state==saved_bus);
+ char diagnostic[256];RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=1 uid=17FA:A3010203"));
  memory[0xFA]=0xFF;RDM_Init();assert(!RDM_Enabled());RDM_FormatDiagnostics(diagnostic,sizeof diagnostic);assert(strstr(diagnostic,"rdm=0 uid=0000:00000000 rx=0 late=0"));return 0;
 }
 """
@@ -741,12 +968,13 @@ def run():
                 identity += f'#include "{ROOT / "Core/Src/eeprom.c"}"\n' + CDC_MOCK
             harness.write_text(f'#define {define}\n#include "h_files.h"\n' + identity + f'#include "{ROOT / "Core/Src" / filename}"\n' + ui + body)
             exe = tmp / 'test'
-            subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Werror=implicit-function-declaration',
+            sanitize = ['-fsanitize=address,undefined', '-fno-sanitize-recover=all'] if define == 'NODE_RDM_TEST' else []
+            subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Werror=implicit-function-declaration', *sanitize,
                             '-I'+str(tmp), '-I'+str(ROOT/'Core/Inc'), str(harness), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
             print(define + ': PASS')
 
-def arm_build(output):
+def arm_build(output, defines=()):
     """Build C/ASM completa con GCC ARM di CubeIDE, senza cambiare il progetto.
     Usa gli include Debug da .cproject e il linker ADSW100; non esegue flash.
     """
@@ -761,6 +989,7 @@ def arm_build(output):
     flags = ['-mcpu=cortex-m7', '-mthumb', '-mfpu=fpv5-d16', '-mfloat-abi=hard',
              '-std=gnu11', '-O0', '-g3', '-ffunction-sections', '-fdata-sections', '-Wall',
              '-DDEBUG', '-DUSE_HAL_DRIVER', '-DSTM32H743xx', '-DUSE_PWR_LDO_SUPPLY']
+    flags += list(defines)
     flags += ['-I'+str(ROOT/p[3:]) for p in includes]
     sources = []
     for folder in ['Core', 'LWIP', 'USB_DEVICE', 'Middlewares', 'Drivers/STM32H7xx_HAL_Driver/Src']:
@@ -789,7 +1018,8 @@ def arm_build(output):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 3 and sys.argv[1] == '--arm-build':
-        arm_build(sys.argv[2])
+    if len(sys.argv) >= 3 and sys.argv[1] == '--arm-build':
+        assert all(flag.startswith('-D') for flag in sys.argv[3:])
+        arm_build(sys.argv[2], sys.argv[3:])
     else:
         run()

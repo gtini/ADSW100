@@ -8,6 +8,7 @@ static uint8_t uid[6], response[257];
 static bool enabled, muted, identify, save_pending;
 static uint32_t changed_at, last_request_at, save_errors;
 static uint32_t valid_requests, late_requests;
+static uint32_t mute_commands, unmute_commands, dub_requests, dub_queued, bad_packets, busy_requests;
 /* Solo RAM: E1.37-2 richiede APPLY prima di attivare DHCP/IP statico. */
 static bool staged_dhcp, staged_static;
 static uint8_t next_dhcp;
@@ -144,6 +145,7 @@ void RDM_Init(void)
     enabled = muted = identify = save_pending = false;
     staged_dhcp = staged_static = false;
     valid_requests = late_requests = 0;
+    mute_commands = unmute_commands = dub_requests = dub_queued = bad_packets = busy_requests = 0;
     memset(&network_job, 0, sizeof network_job);
     memset(uid, 0, sizeof uid);
     if (EE_Read(0xFA, eui, 6) != HAL_OK)
@@ -165,9 +167,12 @@ void RDM_Init(void)
 void RDM_FormatDiagnostics(char *out, size_t capacity)
 {
     if (!out || !capacity) return;
-    snprintf(out, capacity, "rdm=%u uid=%02X%02X:%02X%02X%02X%02X rx=%lu late=%lu\r\n",
+    snprintf(out, capacity,
+             "rdm=%u uid=%02X%02X:%02X%02X%02X%02X rx=%lu late=%lu muted=%u mute=%lu unmute=%lu dub=%lu queued=%lu bad=%lu busy=%lu\r\n",
              (unsigned)enabled, uid[0], uid[1], uid[2], uid[3], uid[4], uid[5],
-             (unsigned long)valid_requests, (unsigned long)late_requests);
+             (unsigned long)valid_requests, (unsigned long)late_requests, (unsigned)muted,
+             (unsigned long)mute_commands, (unsigned long)unmute_commands, (unsigned long)dub_requests,
+             (unsigned long)dub_queued, (unsigned long)bad_packets, (unsigned long)busy_requests);
 }
 
 bool RDM_Enabled(void)
@@ -242,38 +247,56 @@ static void Discovery(uint32_t end)
     response[21] = (sum >> 8) | 0x55;
     response[22] = sum | 0xAA;
     response[23] = sum | 0x55;
-    (void)DMX512_SendPacket(response, 24, true, end);
+    if (DMX512_SendPacket(response, 24, true, end)) ++dub_queued;
 }
 
 void RDM_Receive(const uint8_t *q, uint16_t length, uint32_t end)
 {
     CompleteNetworkJob();
     if (!RDM_PacketValid(q, length))
+    {
+        ++bad_packets;
         return;
+    }
     ++valid_requests;
     last_request_at = HAL_GetTick();
     DMX512_ObserveController(); /* Anche risposte altrui impediscono due sorgenti sulla linea. */
-    if (!enabled || !DMX512_CanReply()) return;
-    if (DMX512_Cycles() - end > DMX_RDM_SERVICE_US * (SystemCoreClock / 1000000u))
-    {
-        ++late_requests;
-        return;
-    }
+    if (!enabled) return;
     uint16_t manufacturer = Word(q + 3), pid = Word(q + 21), sub = Word(q + 18);
     bool broadcast = (manufacturer == 0xFFFF || manufacturer == BRAND_ESTA_MANUFACTURER_ID) && q[5] == 0xFF &&
                      q[6] == 0xFF && q[7] == 0xFF && q[8] == 0xFF;
     if (!broadcast && memcmp(q + 3, uid, 6))
         return;
     uint8_t cc = q[20], pdl = q[23];
+    /* E1.20 7.6.3/7.6.4: MUTE/UN_MUTE validi agiscono sul flag anche se
+       il main e' tardivo o e' gia' iniziato il pacchetto successivo. Solo
+       l'eventuale ACK unicast dipende da CanReply e dalla deadline TX. */
+    if (cc == 0x10 && !sub && !pdl && (pid == 2 || pid == 3))
+    {
+        muted = pid == 2;
+        if (muted) ++mute_commands;
+        else ++unmute_commands;
+        if (broadcast) return;
+    }
+    if (!DMX512_CanReply())
+    {
+        ++busy_requests;
+        return;
+    }
+    if (DMX512_Cycles() - end > DMX_RDM_SERVICE_US * (SystemCoreClock / 1000000u))
+    {
+        ++late_requests;
+        return;
+    }
     if (cc == 0x10)
     {
         if (sub)
             return;
+        if (pid == 1 && pdl == 12) ++dub_requests;
         if (pid == 1 && pdl == 12 && !muted && memcmp(uid, q + 24, 6) >= 0 && memcmp(uid, q + 30, 6) <= 0)
             Discovery(end);
         else if ((pid == 2 || pid == 3) && !pdl)
         {
-            muted = pid == 2;
             uint8_t control[2] = {0, 0};
             if (!broadcast)
                 Reply(q, control, 2, 0, end);

@@ -1,6 +1,282 @@
 # Audit ADSW100 prima della v2.0.0
 
+## Regressione salvataggi e avvio dopo programmazione — 16 novembre 2026
+
+Sviluppo funzionale NFC sospeso. Intervento correttivo circoscritto a EEPROM/hook NFC, inizializzazione IRQ e diagnostica. Nessun cambiamento a mappa, versione, catalogo, formato SDCP2, SYNC1 wire o ai servizi DMX/RDM/rete/relè. Nessun commit, tag o programmazione hardware eseguito.
+
+### Evidenze e correzioni
+
+| Stato / gravità | File e funzione | Causa / conseguenza | Intervento |
+| --- | --- | --- | --- |
+| Confermato su host / alta | `eeprom.c:EE_Write`, `EE_InitWithNfc` | Stato E8 (Init tag autorizzato ma non completato) restituiva HAL_BUSY per qualsiasi salvataggio locale. Il servizio tag può restare pendente per errore I2C, contenuto estraneo o pannello aperto; il bus può essere libero. | Un valore locale effettivamente cambiato prepara una nuova revisione C3 prima del parametro. Annulla il consenso Init tag precedente e preserva i default/parametri correnti; non attende un tag funzionante. |
+| Confermato su host / alta | `eeprom.c:EE_Write`, `EE_NfcLocalLive` | C3 dopo reboot aveva il flag volatile local_live falso e bloccava tutte le successive scritture con HAL_ERROR. Accadeva anche se la configurazione EEPROM era valida. | Una nuova scrittura locale verifica l'intera configurazione persistente e prepara una nuova revisione C3; non riprende automaticamente il salvataggio interrotto. Richieste NFC con base precedente restano obsolete. |
+| Confermato nel flusso HAL / alta, impatto fisico da verificare | `i2c.c:HAL_I2C_MspInit`, `MX_I2C1_Init` | IRQ EV/ER abilitati nel callback MSP, chiamato da HAL prima della configurazione della periferica e dello stato READY. Se esistono eventi residui nel percorso debugger, possono essere serviti troppo presto. | NVIC mascherato in MSPInit0; priorità preparate in MSPInit1; clear pending/enable soltanto dopo HAL init e filtri, in Init2. Recovery NFC conserva la propria riabilitazione dopo HAL init. Nessun reset aggiunto. |
+| Confermato, comportamento corretto | `user_interface.c:UI_HandleSys` | Asterisco rimosso solo se EE_WriteU8 ritorna HAL_OK. Il toast EEPROM error e l'asterisco persistente riflettono un fallimento reale. | Nessuna modifica cosmetica o forzatura del successo UI. |
+| Aperto su hardware | Avvio CubeIDE Run after programming | Nessuna acquisizione PC/registri nel guasto: non è dimostrato che il difetto IRQ spieghi il sintomo osservato. Restano da distinguere reset/debug, bus esterno trattenuto, IRQ e percorso di boot. | Build A/B e diagnostica RAM; non dichiarato risolto. |
+
+I due test nuovi hanno fallito prima delle rispettive correzioni: salvataggio Backlight con E8 e attivazione IRQ prima che il mock HAL sia pronto. Il test IRQ esegue i blocchi USER CODE reali nell'ordine HAL; non simula l'intero reset fisico STM32.
+
+### Confronto prima/dopo NFC e ownership
+
+Confronto dei sorgenti tracciati in HEAD `743afc1` con l'integrazione NFC nel working tree, senza ripristinare altre modifiche. Prima EEPROM/RTC usavano HAL sincrona senza riserva NFC o hook revisione. Dopo: trasporto NFC IT con riserva `ee_nfc_bus_reserved` mantenuta anche nella pausa STOP/READ e durante programmazione/rilascio; RTC ed EEPROM rifiutano l'accesso durante tale riserva. HAL_READY da sola non autorizza l'accesso fra MEMA e READ.
+
+Gli accessi applicativi sono nel main cooperativo; callback e IRQ NFC aggiornano stati/contatori, senza scritture EEPROM o stampe. EEPROM conserva scrittura a pagine8byte, ACK polling e readback sincroni. RTC resta sincrono; nel confronto il suo unico cambiamento è il controllo della riserva. `EE_SaveConfig` usa gli stessi EE_Write/readback del pannello. Non individuato un secondo driver I2C concorrente in ISR. I controlli di bus, range e validità restano attivi: B6/D7 e NF riconoscibili ma corrotti continuano a impedire salvataggi ambigui; errori I/O non inizializzano la configurazione.
+
+`NFC_Service` conclude lo scambio pendente prima di cedere al pannello. La disabilitazione diagnostica termina anche una pubblicazione NDEF già iniziata, compreso readback, prima della quiescenza; non libera artificialmente un trasferimento HAL ancora attivo. Il timeout/recovery già esistente non è stato aumentato o sostituito. `stm32h7xx_it.c` inoltra EV/ER alla HAL; nessun nuovo cambio al bridge o alle callback in questo intervento.
+
+### Avvio: indagine separata
+
+Il boot inizializza I2C, quindi RTC e controllo EEPROM prima di avviare NFC. `Startup_SimpleUnlock` già prima dell'integrazione interpretava il fallimento di EE_ReadU16 come assenza magic: può mostrare Wait for boot/attendere il codice anche con EEPROM valida ma illeggibile. È un rischio preesistente, non prova del guasto attuale e non è stato modificato in questo intervento. Non introdotti reset software, recovery a clock sui pin, ritardi o timeout aggiuntivi.
+
+Registrati in RAM, prima della pulizia dei flag reset: RCC.RSR, ISR/CR1 I2C e livelli PB6/PB7. Stage:1 dopo init periferiche e prima RTC;2 dopo RTC;3 dopo hardware_check;4 dopo unlock e init servizio. I flag reset hardware sono cumulativi: confrontarli con la configurazione effettiva CubeIDE/ST-LINK, senza dedurre il tipo di reset dal solo nome Run. Se il blocco precede il servizio CDC occorre fermare la CPU senza reset e leggere PC/LR, stage, hi2c1.State/Lock/ErrorCode/XferISR, I2C1 ISR/CR1/CR2 e GPIOB.IDR.
+
+### Diagnostica e build A/B
+
+- `ee?`: ultimo ritorno pubblico EE_Write (incluse scritture metadati), indirizzo/lunghezza, numero chiamate, riserva, transazione NFC e ultimo stato metadati osservato. rc:0 OK,1 ERROR,2 BUSY,3 TIMEOUT. Metadati riportati dalla cache, non riletti.
+- `i2c?`: abilitazione NFC, owner, fase, risultato, riserva/pending/writing, stato/lock/errore HAL, registri e linee correnti; stage e fotografia boot.
+- `nfc?` / `nfc_i2c?`: stato servizio e ultima fotografia di guasto già esistenti.
+- `nfc=0` / `nfc=1`: selezione volatile diagnostica, senza EEPROM. Dopo OFF attendere `i2c?` con enabled=0, owner=0, reserved=0, pending=0, writing=0. Una pubblicazione o uno scambio pendenti vengono completati; se il pannello li sospende, tornare Home. Nessun reset del bus comandato dalla CDC.
+
+Build completa ON: `/private/tmp/adsw100-i2c-regression-nfc-on/ADSW100.elf`; OFF: `/private/tmp/adsw100-i2c-regression-nfc-off/ADSW100.elf`. OFF inizializza il flag runtime con `NFC_START_ENABLED=0`: tutto il driver è incluso e gli hook EEPROM di sicurezza restano attivi, ma non parte alcuno scambio NTAG. EEPROM/RTC restano funzionanti; non è una build che aggira i metadati. Il progetto CubeIDE è invariato e compila ON per default. Riproduzione: `python3 -B tests/test_stabilization.py --arm-build <cartella>`; aggiungere `-DNFC_START_ENABLED=0` per OFF.
+
+### Procedura hardware necessaria prima della chiusura
+
+1. Conservare impostazioni e cablaggi; non usare Init Memory, erase EEPROM o factory reset. Tenere inizialmente assente il campo RF. Verificare il file ELF effettivamente selezionato da CubeIDE, evitando di programmare una vecchia build Debug.
+2. Provare OFF: avvio da alimentazione; modificare Backlight e OFF Time30→0, confermare scomparsa asterisco e rc=0 in ee?; riavviare e verificare persistenza. Controllare RTC. Acquisire i2c?, ee?, nfc? e log Reset flags.
+3. Con la stessa OFF ripetere almeno tre programmazioni con Run after programming, senza togliere alimentazione. Separare l'esito da quello di reset NRST/software e da power cycle. Se non riparte, fermare senza reset e acquisire il contesto sopra; non cancellare la prova togliendo subito alimentazione.
+4. Ripetere gli stessi passi con ON e medesimi collegamenti. Non si assume uguale revisione NFC dopo i test: usare le stesse impostazioni, senza ripristinare byte EEPROM alla cieca. Confrontare ultimo esito salvataggio, riserva, IRQ e fotografie boot. Ripetere poi con NFC attivo/campo RF e traffico normale.
+5. ON, poi nfc=0 fino a quiescenza, quindi salvataggi: distingue interferenza del trasporto runtime da errore degli hook metadati. OFF dal boot distingue inoltre gli effetti prima della prima operazione NTAG. Se entrambe falliscono, non attribuire il problema al solo trasporto NFC.
+
+CDC ADSW100 tentata in sola lettura: porta occupata (Errno16), nessuna lettura del guasto disponibile e nessuna sessione altrui interrotta. Nessuna prova hardware dichiarata completata.
+
+Test software: stabilizzazione10gruppi; fondazione14gruppi; NFC C -O2 ASan/UBSan con vettori ufficiali, nuovi casi E8/C3, drain runtime OFF, accessi RTC/EEPROM e diagnostica senza I/O, completamento pubblicazione durante OFF,24scenari di taglio locale,170errori commit,68tagli REQUEST e24tagli Init. Build ARM ON/OFF150unità, entrambe senza warning. BIN SHA-256 ON `191e845609b67cffc935a86cd8d56c69c4c239db585039290e2e969ed3556e0b`, OFF `23073734ea5404f57ff3d326c735cdf02496ebb64b36cf6c80ee1eaebf61fe44`. ELF/HEX/BIN, map/log e verification.json nelle cartelle di build; la prova host non certifica il reset/debug fisico.
+
+
+## Correzione trasporto NFC I2C — 16 novembre 2026
+
+Dato hardware utente: `nfc=I2C_ERROR addr=57 capacity=0 ... errors=38 timeout=38 nack=0`. Il vecchio campo addr era **il candidato successivo all'errore**, non un indirizzo confermato; nessuna prova che57 fosse programmato nel chip. Le precedenti letture ADSW avevano individuato02. Il riferimento Git esatto `0578567:Core/Src/nfc.c` usa invece NFC_ADDRESS55 fisso e `ChipHeader` per verificare UID0/SAK/ATQA; non contiene una scansione multi-indirizzo da copiare. Riutilizzati quel riconoscimento e la gestione3NACK del riferimento, adattando solamente la selezione delle alternative ADSW02/55/57/59 e il preload HAL H7. Le alternative57/59 sono tentativi storici locali, non default NXP attestati.
+
+**Difetto confermato e riprodotto:** `BUS_Task` comprendeva nell'unica scadenza30ms anche il tempo del main dopo che la trasmissione MEMA era già terminata con STOP. La condizione RX richiedeva ancora `now-started<30`: con main fermo80ms non avviava affatto RX e registrava timeout, poi cambiava indirizzo. Nuova regressione sul C reale (ASan/UBSan,-O2): ripristinando in una copia temporanea la condizione originale fallisce esattamente sul caso STOP+80ms; il codice corretto completa lettura/pubblicazione. Il budget30ms resta invariato per ciascun comando HAL attivo; parte nuovamente quando RX è realmente avviata. La pausa STOP minima2tick e l'attesa di programmazione10tick rimangono quelle del driver DRV. Nessuna nuova macchina a stati I2C.
+
+**Limite dell'evidenza:** il vecchio log non registra fase/IRQ/registri e non dimostra che tutti i38timeout fisici siano quello stesso caso. In particolare non consente di escludere IRQ non serviti o linea trattenuta dal chip. Queste restano verifiche hardware, non cause dichiarate certe.
+
+Correzioni circoscritte:
+
+- `nfc_i2c.c:Start/BUS_NfcSession/BUS_Task`: indirizzo a7bit distinto dall'argomento HAL, congelato per l'intero scambio.02->04,55->AA; STM32 aggiunge il bit di lettura, non si passa AB a HAL. Separata anche la variabile lunghezza del trasporto da quella del documento, che prima condividevano lo stesso nome/tipo nel file.
+- `NFC_Service`: conferma l'indirizzo solo dopo lettura completa e ChipHeader valido. Timeout/errori generici non fanno ruotare l'indirizzo. NACK reale del probe può far avanzare il candidato; per perdere un indirizzo già confermato servono3NACK consecutivi. Non si usa XferCount==1 del G4: H7 precarica il primo byte e può avere già count0 prima dell'ACK. HAL_BUSY con vecchio ErrorCodeAF non vale come nuovo NACK.
+- `BUS_Task`: niente comando di rilascio FE064000 verso un device dal quale sia stato letto un header non NTAG. Test dedicato: ACK senza header NXP non conferma il chip, non programma registri sessione e non tocca la configurazione.
+- `i2c.c` USER CODE MSP Init/DeInit: attivazione/disattivazione IRQ come nell'impostazione DRV, mantenendo priorità2 H7 sotto USART/TIM6/TIM7. Nessun cambio a clock, timing, GPIO o file IOC. IRQ bridge in `stm32h7xx_it.c` conta gli ingressi e inoltra alla HAL, senza stampe.
+- `Failure`: prima del reset HAL conserva fase, registro, indirizzo HAL, CR1/CR2/ISR, stato/count/errori HAL, NVIC enable/pending, PRIMASK/BASEPRI, livelli SCL/SDA e contatori IRQ/callback. Non si deduce assenza del chip da un timeout.
+
+L'indirizzo attivo si conferma dall'ACK e dall'header valido a quel destinatario: il byte0 letto04 è UID0, non il registro indirizzo. In scrittura block0 il riferimento preserva l'indirizzo usando address7<<1; la correzione non riprogramma quel registro. I contatori sono cumulativi dall'avvio: dopo recupero devono smettere di crescere, non tornare automaticamente a zero.
+
+Diagnostica CDC:
+
+```text
+nfc?
+nfc_i2c?
+```
+
+Il primo mostra `addr=02 probe=02 hal=04` dopo conferma, oppure `addr=--` finché nessun header è stato validato. `probe` è il candidato corrente/prossimo, non una prova di presenza. Su DRV/default55 l'equivalente è `addr=55 probe=55 hal=AA`. `capacity` può essere816 o888 secondo il CC: non viene riprogrammato per correggere la comunicazione. Su NDEF proprio inizializzato si attende SYNCED e scansioni crescenti; JSON/tag estraneo può dare FOREIGN_OR_INVALID pur con comunicazione corretta. In quel caso Init Memory conserva le protezioni già implementate. Nessun cambiamento d'indirizzo programmato nel tag.
+
+`nfc_i2c?` è la fotografia **dell'ultimo errore**, prima di DeInit/Init; `liveirq` e `cb` sono contatori correnti. Senza errori i registri storici possono essere zero. Phase1=prefisso,2=pausa dopo STOP,3=RX,4=write,5=rilascio,6=programmazione. `last_hal` è l'argomento del trasferimento fallito. `irq=EV/ER` è il conteggio al guasto, `en/pend` hanno bit0 EV e bit1 ER; `mask` è PRIMASK/BASEPRI. `lines` bit0=SCL(PB6),bit1=SDA(PB7),3 indica entrambe alte. Questi dati permettono di distinguere NACK processato, flag hardware pendente, IRQ assente e bus trattenuto. Non vengono letti/scritti EEPROM o parametri dal comando diagnostico.
+
+Verifiche software: build ARM150unità senza warning; regressioni NFC complete con nuovo caso80ms/preloadH7, timeout vero senza rotazione, indirizzo02/55, header estraneo e bridge IRQ; fondazione14gruppi e stabilizzazione10gruppi PASS. Verificati hash identici di EEPROM, driver DMX/RDM/rete/relè, RTC/UI, catalogo/fingerprint/generatore/vettori; funzioni NfcBuild/Parse/Process testualmente identiche. Le modifiche dei file generati sono solo USER CODE. Nessuna modifica a URC01/DRV_STG4, nessun commit/tag/flash.
+
+Build: `/private/tmp/adsw100-nfc-i2c-fix/ADSW100.elf`, `.bin`, `.hex`; ELF SHA-256 `5ad90e66be602b9e153ff1bf3bf321ce0d3ef2be5a8de021cdeb981498f29ed7`, BIN `93bedd61e905f229fe3804ad25853d15f498d6b4d936c9d94806aeef8b584c8b`. Collaudo fisico ancora richiesto: pannello Home, prima prova senza campo RF, lettura delle due diagnostiche. Eventuali timeout residui richiedono la nuova fotografia; non sono dichiarati risolti sul dispositivo dai soli test host. Nessuna sonda ST-LINK rilevata; la CDC ADSW risultava occupata dal terminale, quindi non sono stati acquisiti nuovi registri live.
+
+## SDCP2 ADSW100 — integrazione fase 2, 15 novembre 2026
+
+Implementati nel solo ADSW100 SNAPSHOT, REQUEST e ACK SDCP2/NDEF/SYNC1, senza cambiare cataloghi o formato approvati. `Core/Inc/nfc_catalog.h` è generato dalla sorgente JSON: fingerprint ADSW `14ee6a5f3b5e73f4487b1a83f83481530618172a55d8fb6b031f2cc9c38a3680`, 15 istanze, snapshot base197byte, TLV/NDEF233byte (240 per le scritture I2C allineate). Software ID operativo resta1.4.0, coerente con RDM; il confronto golden usa l'identità/Software ID della fixture, non pretende che il seriale reale sia quello dell'esempio.
+
+File funzionali: `nfc_i2c.c/h`, header dati generato, `eeprom.c/h`, integrazione USER CODE di `main.c` e `stm32h7xx_it.c`, comando CDC `nfc?` in `usb_debug.c`. `rtc_i2c.c` rispetta la riserva del bus; `UI_ConfigActive()` in `user_interface.c/h` è una query che non cambia navigazione e sospende nuove operazioni NFC mentre il pannello configura. Il bus pendente viene comunque drenato, per evitare BUSY sul salvataggio. Non aggiunti moduli NFC/controller/router o librerie crittografiche.
+
+Trasporto IT STOP/READ/rilascio lock adattato da DRV_STG4 `0578567:i2c_bus.c`, indirizzo rilevato fra02/55/57/59, programmazione NTAG attesa cooperativamente10tick, timeout30ms con recupero HAL. IRQ I2C1 a priorità2, sotto USART/TIM6/TIM7. Nessuna HAL_Delay nel driver NFC. Le chiamate EEPROM legacy con readback restano sincrone: non si dichiara il commit interamente non bloccante. Due scansioni stabili e RF assente prima del processing; controllo RF e revisione prima di ogni scrittura, header NDEF commesso per ultimo, poi verifica completa. Nessun journal aggiunto al tag e nessuna modifica al CC già valido.
+
+### Init Memory richiesto dall'utente
+
+L'azione `HardFactoryReset` usa `EE_InitWithNfc`: D7 prima dei default, E8 solo dopo readback completo della EEPROM. Dopo il reboot il servizio pubblica i default verificati e consuma E8 solo dopo readback del tag. Riconosce JSON legacy anche dopo NULL TLV, ma verifica MIME, struttura e magic del proprio EUI; i valori JSON **non vengono mai applicati**. Cancella soltanto la coda occupata dal vecchio NDEF riconosciuto. NDEF estranei o illeggibili restano intatti anche con consenso pendente.
+
+CC vergine/parziale compatibile con il provisioning: solo E8, probe del blocco2k, verifiche UID/accesso/static lock/config e nuova guardia header/RF. RMW block0 come DRV: byte0 scritto = indirizzo attuale<<1, non UID04; conserva gli altri byte, programma E1 10 66 00 e verifica il readback. CC validi/protezioni non vengono alterati. Nessuna deduzione di capacità dal solo indirizzo I2C. Presenza tag, supporto modello e probe2k vanno confermati sul dispositivo reale.
+
+### Persistenza e recovery
+
+Hook in `EE_Write` invalida la base NFC prima delle scritture ai parametri, incluse quelle dirette del pannello; identità/brand/policy non fanno parte della configurazione NFC. Nessuna scrittura legacy per bootstrap NFC. REQUEST prepara revisione/ID/CRC in B6 prima dei parametri; applica solo campi cambiati con CFG, salva mediante EE_SaveConfig, rilegge tutta la configurazione e solo allora commette metadata e ACK. ID/CRC già commessi producono solo ACK; ID uguale con CRC diverso, base obsoleta, editing locale o RDM occupato non applicano dati. Le sezioni sconosciute non critiche sono conservate byte per byte nell'ACK; critiche sconosciute rifiutate.
+
+Dopo reset B6 si finalizza soltanto se il documento e **tutti** i parametri già coincidono, senza riscrivere configurazione. NF corrotto, D7 interrotto e C3 non appartenente alla sessione corrente non causano default o replay automatici. Sono possibili configurazioni parziali dopo un power-cut nella EEPROM in place: vengono lasciate invariate e segnalate, non corrette silenziosamente. Intenzione Init pendente non autorizza a cancellare tag estranei/illeggibili. Una pubblicazione tag interrotta non riconoscibile può richiedere manutenzione esplicita; nessuna garanzia di autoripristino universale senza journal/secondo slot.
+
+### Verifiche effettive
+
+- Host ASan/UBSan (anche -O2) `tests/test_nfc.py`: snapshot golden byte-identico, 18 vettori ADSW positivi/negativi, loop trasporto con21 REQUEST/ACK, RF busy, protezioni/capacità CC, JSON valido non importato, timeout e NACK, priorità pannello/RDM, deduplicazione e ID conflittuale, estensioni opache, replay dopo salvataggio locale.
+- Conservazione legacy host: tre brand, Videlio con menu_code1, tutti i byte00..27 e luminosità legacy150 invariati durante la pubblicazione; nessuna normalizzazione del parametro non modificato.
+- Fault injection host:170 scenari I/O nel commit;68 interruzioni immediate a livello di byte su richiesta multiparametro rete/DMX,24 nell'Init EEPROM. Reset simulato senza cleanup: nessuna riscrittura dei parametri già elaborati; E8 solo con default verificati. Non sono tagli fisici di alimentazione né un modello analogico delle celle EEPROM.
+- Init host: sostituzione JSON proprio posto all'offset legacy, nessuna importazione, eliminazione coda, riconferma dopo reset senza seconda formattazione, CC vergine2k agli indirizzi02 e55 preservando UID/indirizzo/lock; contenuto estraneo preservato.
+- Fondazione:14 gruppi PASS e fingerprint/cataloghi invariati. Stabilizzazione:10 gruppi PASS, inclusi soak e hold Node30s. Sorgenti DMX/RDM/Art-Net/sACN/relè verificati per hash identico a inizio fase2; nessuna modifica ai riferimenti URC/DRV.
+- Build ARM completa150unità PASS, senza flash automatico; artefatti in `/private/tmp/adsw100-nfc-sdcp2`.
+
+Artefatti di questa build: ELF SHA-256 `7df63be13bbb6d1b9cd284668d89ceecd901773e45ee2360472a52511539c5be`, BIN `6ef2142c661d90843a66c903d191e370deb4d62695b49cc9965816d95f9e2128`. text221816/data648/bss75067 byte (build Debug host-generated,150unità). Nessun warning nei log ARM. Sezioni generate CubeMX fuori USER CODE verificate identiche a HEAD; CRLF preservati. Nessun flash eseguito.
+
+Per il collaudo usare `nfc?` sulla CDC. Stati principali: SYNCED, RF_BUSY, WAIT_RDM, INIT_INTERRUPTED, INIT_FOREIGN_OR_EDIT, REQUEST_RECOVERY_REQUIRED, EEPROM_ERROR. `state` riporta l'ultimo stato metadata letto/tentato dal servizio, non una lettura live della EEPROM durante la diagnostica. Init Memory è l'azione esplicita che ripristina i default come prima e programma anche il tag dopo reboot; un avvio ordinario non sostituisce JSON legacy. Non viene abilitato il vecchio writer URC01 per SDCP2.
+
+Da misurare su hardware: tempi I2C/RF e reali lock/capacità, field remove/reapply, concorrenza RDM/Node/Ethernet/RTC durante commit EEPROM, refresh DMX/relè e watchdog, power-cut fisici, CC/provisioning e consumo consenso. I test NFC host simulano lo stato occupato RDM, non qualificano l'intero superloop sotto traffico fisico simultaneo. URC01 attuale non è il nuovo client SDCP2: non dichiararlo collaudato da questi test.
+
+## Fondazione NFC comune — 15 novembre 2026
+
+Architettura approvata e specifica congelata in [protocol/nfc/README.md](../protocol/nfc/README.md): SDCP2/NDEF/SYNC1, registro per namespace, catalogo esterno da JSON comune, binario v1 e fingerprint SHA-256. Censite66 chiavi nei quattro progetti; voci non completamente specificate restano opaque e non editabili. Nessun nuovo PID rete: selettori standard 0703/0706/070A/070B, con mapping persistente ADSW distinto dalle risposte GET correnti. PWM passa come enum UINT8 F1..F7, mantenendo codici0..6.
+
+Realizzati generatore/validatore host, cataloghi e vettori. Quattordici gruppi di test PASS, inclusi31 vettori SDCP, round-trip binario/NDEF, generazione identica, fingerprint, gestione errori e mapping rete legacy. Ed25519 reale, adapter firmware, tempi bus/RF e power-cut persistente restano da verificare/implementare. In questa fase nessuna modifica a firmware o riferimenti; nessun commit/tag. I 16 byte NFC autorizzati non forniscono atomicità della configurazione EEPROM in place.
+
 Data: 14 novembre 2026. Audit iniziale statico, seguito dagli incrementi e test documentati sotto. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nella prima analisi non erano state eseguite compilazioni o misure hardware. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
+
+## Assegnazione Model ID e codice Uploader96 — 15 novembre 2026
+
+Autorizzazione esplicita utente:96 sia in ADSW100 sia nel catalogo INI. Model ID RDM16 bit=96/0x0060 sotto Manufacturer0x17FA, comune a Brand0 AXN/NODIM01, Brand1 Videlio/ADSW100 e Brand2 Generic/NODIM01. Assegnazione distinta ma numericamente uguale per codice uploader/Product ID futuro32 bit=96/0x00000060. `Core/Inc/rdm.h:ADSW_RDM_MODEL_ID` sostituisce il placeholderFFFF; `Core/Inc/defs.h:ADSW_UPLOADER_PRODUCT_ID` conserva la prenotazione per la futura integrazione. Nessun Target ID, layout o bootloader aggiunto. Versione software resta1.4.0 durante lo sviluppo; UID, OEM, Manufacturer, EEPROM e brand non vengono cambiati.
+
+File INI effettivo: `/Users/gianlucatini/micro/Studio Due/UPLOADER_FW_BUILDER/uploader_fw_builder/config/MakeFWF.ini`. `UPLOADER_PYTHON/Uploader_App/updater.ini` contiene solo connessione/trasporto e resta invariato. Il catalogo Builder registrava i profili fino a93 e le prenotazioni commentate94 DRV_STG4 e95 URC01. Prenotato96 con lo stesso metodo, senza inventare Key, Micro o profilo PIC. Una sezione legacy incompleta renderebbe read_catalog non valido; la prenotazione non pretende di rendere gia' programmabile ADSW100. Registro e censimento attivi aggiornati in Firmware_Git/URC01/docs/STUDIO_DUE_IDENTIFICATORI.md e STUDIO_DUE_ID_LEGACY.tsv, distinguendo Model ID RDM, Product/Uploader, Target e UID.
+
+Controlli: nessuna precedente assegnazione96 trovata negli INI/censimenti e nelle macro Device/Model/Product delle sorgenti locali cercate; nessuna garanzia su archivi esterni non disponibili. Parser reale read_catalog:94 profili identici prima/dopo l’aggiunta dei commenti di assegnazione, CRLF/encoding preservati. La suite completa test_legacy_st2 non e' stata eseguita per dipendenza PySide6 assente nel Python disponibile; nessuna modifica a test/cataloghi preesistenti per aggirarla. Dieci gruppi firmware host PASS, con DEVICE_INFO nei tre brand che restituisce byte00 60 e codice uploader96; build ARM150 unita' PASS. Nessun flash/commit/tag automatico.
+
+Artefatto con assegnazione96: `/private/tmp/adsw100-model96/ADSW100.elf`, SHA-256 `60a2ec0965e788fb3892d107878325663cda37bfd8c3d7efa05e7a4fc66630d1`; build senza warning/errori. Model ID da verificare sul controller dopo programmazione.
+
+## Esito utente e ripristino URC01 alla versione IPv4
+
+Il15 novembre2026 l’utente conferma «Funziona bene» per ADSW100 con la cessione RDM autonoma di30 s provata con URC01 precedente, quindi richiede il ripristino dei sorgenti URC01 alla versione IPv4 validata prima dell’esperimento Node. E' una conferma hardware dell’utente; non sono stati forniti un elenco dettagliato di tutti i casi/tempi/protocolli o prove DMXcat/Swisson, che non vengono dichiarati collaudati.
+
+URC01: ripristinati dmx_tx.c, rdm_phy_test.py e dmx_stream_host_test.py alla snapshot pre-Node; rimosse solo le parti keepalive da rdm_manager.c e dal relativo harness, conservando integralmente le modifiche IPv4. I cinque file risultanti corrispondono byte per byte agli hash della snapshot pre-Node conservata durante l’implementazione. Restano RM_NetworkFormat, etichette interfaccia/editor, DHCP ON/OFF, IP/prefix, gateway e DNS e le relative regressioni. Nessuna acquisizione bus aggiuntiva, possesso750 ms o GET periodico500 ms rimane in URC01. La documentazione URC01 e' aggiornata alla scelta corrente; l’esperimento precedente resta documentato qui come storico, non come implementazione attiva.
+
+ADSW100 mantiene la soluzione autonoma30 s e la correzione TIM7. Nessun sorgente ADSW100 modificato nel ripristino URC01; EEPROM, branding, parser Ethernet e relè invariati. Nessun flash/commit/tag automatico.
+
+Validazione del ripristino URC01: build Release PASS senza warning/errori; test Manager/E1.37-2, controller/discovery, PHY controller, PHY responder e streaming DMX PASS (ASan/UBSan nei banchi previsti). Nuovo ELF `URC01/Release/URC_100.elf` SHA-256 `ae28c3788a80c3867dcad0a6df051b0351fbbe21f4e0134b173b5d780e6cbe43`; pacchetto `URC01.st2fw` SHA-256 `db0c51f174cd9d6ef78cd13f2fab23aec6d4c8cb367b08187f5f4bfbbcd14257`. Verificate anche le stringhe IPv4 nel binario. Artefatti ricompilati, nessuna programmazione della scheda.
+
+## Cessione RDM autonoma ADSW100 di30 secondi — decisione corrente
+
+L’utente sceglie di verificare con URC01 precedente alle modifiche Node e autorizza la soluzione autonoma ADSW100:30 secondi dall’ultimo pacchetto RDM con struttura e checksum validi, indipendentemente dal tool. Questa decisione supera la necessita' del mantenimento specifico URC01 descritto nell’incremento storico sotto. Non sono state annullate automaticamente le modifiche URC01 gia' preparate; non sono richieste per questo collaudo.
+
+Modifica funzionale in `dmx_512.c`: `DMX512_ObserveController` rinnova lo stato RAM RDM separato dal rilevamento DMX; `RDMControllerPresent` gestisce scadenza monotona30000 ms, memorizzandola anche in IN per evitare riattivazione al giro del tick; `NodeTryStart` applica la cessione a entrambi i Node. DMX mantiene il rilevamento2 s preesistente. BREAK/Start Code/pacchetto in corso sono protetti subito dagli stati RX gia' presenti; il main rinnova i30 s soltanto dopo RDM_PacketValid. CRC errati, header incompleti o UART error non rinnovano il periodo. Nessuna logica PID o nuovo checksum in ISR. La cessione RDM e' conservata attraverso i cambi ruolo: SET IN→Node non fa ripartire il TX durante configurazione. Alla scadenza continuano a valere stato RX/TX, fine TC, attivita' recente, BUSY/RXNE/errori e pin libero: ripresa da BREAK con frame completo, mai taglio di un frame attivo.
+
+`rdm_phy?` aggiunge `hold` in millisecondi, durata residua della cessione RDM (anche in IN, come protezione di un successivo cambio a Node). Nessuna nuova EEPROM, PID, opzione pannello o codice controller richiesto. Parser/arbitraggio Ethernet, relè, BREAK/MAB e correzione TIM7 invariati. Con un Manager che continua discovery/polling la cessione resta rinnovata: per verificare la ripresa devono cessare i messaggi RDM; uscire dal solo editor potrebbe lasciare attive le interrogazioni del Manager. Traffico DMX di un altro controller continua correttamente a impedire che il Node diventi una seconda sorgente.
+
+Limiti: il ricevitore non ascolta durante il proprio TX. Il primo messaggio del tool puo' non essere intercettato e richiedere ripetizione; dopo una pausa operatore superiore a30 s il Node puo' aver ripreso la trasmissione. Non si promette arbitraggio multimasters o compatibilita' hardware con ogni tool. DMXcat e Swisson non sono stati collaudati dall’agente.
+
+Prove software: dieci gruppi host PASS con ASan/UBSan nel banco Node/RDM. In entrambi i Node: GET, pausa10 s senza keepalive, SET→GET riusciti; rinnovo e tenuta oltre29 s; CRC errato non rinnova; scadenza durante RX parziale protetta e successivo messaggio valido rinnova; cambio IN→Node conserva la cessione; header incompleto/error UART non crea una falsa cessione; pin basso/BUSY dopo scadenza impediscono TX finche' la linea non e' libera; ripresa513 byte; wrap HAL_GetTick. Aggiornati solo i test di ripresa dopo RDM da2 a30 s, conservando le attese DMX/boot preesistenti. Restano PASS stress10 minuti per Node con keepalive, soakRDM/DMX, EEPROM/branding/UI/CDC e regressione ARR nullo.
+
+Build ARM150 unita' PASS senza warning/errori: `/private/tmp/adsw100-rdm-hold30/ADSW100.elf`, SHA-256 `3b10cf34de6491d7017ae18e664684418c2a9a562357e2c0ce6b3cd7fcf7efac`. Nessun flash, commit o tag eseguito. Collaudo hardware richiesto con vecchio URC01: acquisizione iniziale, editor inattivo10–20 s, SET Address/Mode e lettura successiva, cessazione traffico e ripresa dopo30 s, ripetizione Art-Net/sACN e osservazione DE. Le modifiche Node URC01 restano opzionali e da qualificare su altri apparecchi: modificano tempi di acquisizione e GET periodici, pur senza nuovi payload o SET impliciti; conservare la presentazione IPv4 validata.
+
+## Sessione coordinata Node autorizzata e implementata — 15 novembre 2026
+
+La precedente correzione della presentazione IPv4 URC01 e' confermata dall’utente sul display dopo programmazione; non soltanto verificata in host.
+
+L’utente autorizza esplicitamente la sospensione DMX OUT durante configurazione RDM. La nuova implementazione usa la cessione2 s gia' esistente in ADSW100, senza nuovi PID o EEPROM. Modifiche funzionali solo a URC01: `rdm_manager.c:Start/Reply/RDM_ManagerTask` mantiene l’editor cablato con GET DEVICE_INFO ogni500 ms quando non ci sono altre richieste; non tocca cache o piano SET. Alla chiusura cessano le letture, il Node riparte dopo il lease; se si disconnette il controller si applica la stessa scadenza. Restando nell’editor si sospende intenzionalmente il DMX fisico a valle, con le relative policy DMX Loss dei ricevitori.
+
+`URC01/dmx_tx.c:DMX_TX_RDMExchange/RDM_BusIRQ/RDM_BusTimer/TIM2_IRQHandler/UART4_IRQHandler/DMX_TX_RDMPoll` aggiunge ascolto passivo non bloccante prima del TX. DE basso per30 ms di linea completamente silenziosa oppure fino a BREAK+SC0+512 slot del Node, poi gap100 us verificato. Risposte validate e corrispondenti a UID/TN/PID/sub-device/command class della richiesta mantengono il possesso coordinato750 ms per richieste ravvicinate. UART BUSY/RXNE/errori e pin basso impediscono l’avvio; il limite500 ms resta controllato anche sotto traffico continuo. Frame corti/incompleti non autorizzano una trasmissione nel mezzo del frame: tornano Port busy. Il buffer TX esistente conserva la richiesta con DMA inattiva; evitata una copia257 byte DTCM che superava il margine heap/stack, senza cambiare linker o dimensione stack.
+
+Limite dichiarato: questa acquisizione e' pensata per un ADSW100 Node a512 slot con periodo inferiore a30 ms e un URC01. Non garantisce arbitraggio tra controller generici o piu' Node attivi. Non taglia frame DMX, non amplia semplicemente la finestra RX e non cambia i payload E1.20/E1.37-2. Firmware ADSW100 applicativo invariato rispetto alla correzione TIM7; aggiunta soltanto regressione host della sessione.
+
+Prove: PHY e Manager ASan/UBSan PASS (DE basso durante frame, gap, pin/BUSY, frame corto, timeout sotto traffico, editor inattivo10 s, SET/readback dopo pausa, chiusura senza nuovi GET); regressioni controller/discovery, responder PHY e streaming DMX PASS. Build URC01 Release PASS con controlli heap/stack. ADSW100: dieci gruppi PASS, inclusi10 minuti simulati per ciascun Node con GET500 ms, SET/get, timeout, ripresa513 byte e ritorno IN. Collaudo elettrico con entrambe le schede aggiornate ancora necessario; nessun flash/commit/tag automatico.
+
+Artefatto URC01 finale: `Release/URC_100.elf`, SHA-256 `b9751d8bf8dfa932969715bc990b0d6aa8e2cfee48c6ec8c4ca4901b42a079c0`; pacchetto `Release/URC01.st2fw`, SHA-256 `e4b5e49f452095a683d42d01ad123afe94d391b10789eb2410f8eecec05e9f66`. Build Release senza warning/errori. Firmware ancora da programmare e collaudare con ADSW100; il solo risultato host non chiude il difetto sul banco.
+
+## Prova Node dopo correzione TIM7 — 15 novembre 2026
+
+Utente: Art-Net Node attivo, discovery riesce e alcuni GET leggono, altri mostrano Invalid response; SET Mode→IN e indirizzo non riescono. Monitoraggio CDC di sola lettura nello stesso stato, senza reset o modifiche firmware: a936585 ms ruolo1/1, TX3/DE1, CR1=A9, TIM7 D/1/0/29999/6184, sent8953; a1017983 ms sent12165. Il TX continua a circa40 frame/s, fault0: non è il precedente blocco TIM7. RX RDM749, byte21556 e FE749 restano inizialmente invariati mentre il controller è nell’editor.
+
+Su richiesta di una singola prova SET Mode→IN dal Manager, l’utente riporta `0 OK, 0 NACK, 1 Error`. Snapshot successivo a1089866 ms: ruolo ancora1/1, RX RDM749, byte21584 (+28), FE749 invariato, NE/ORE0, drop0 e fault0; il driver non ha pubblicato una nuova richiesta RDM completa. In questo tentativo il SET non è arrivato al decoder PID: non è stata dimostrata una perdita del solo ACK o una mancata persistenza EEPROM. Il rilevamento dei byte senza una nuova richiesta è compatibile con perdita del BREAK/start durante il proprio TX; senza capture elettrica non si attribuisce a un preciso fronte la contesa.
+
+Codice verificato: `NodeTryStart` mantiene la cessione2 s dall’ultimo pacchetto/controller riconosciuto, poi riprende il DMX autonomo. `URC01/rdm_manager.c:RDM_ManagerTask`, ramo editor, esaurisce i dettagli da leggere e poi ritorna senza polling periodico. Ne deriva che durante la lettura iniziale può esserci RDM operativo, mentre dopo la pausa operatore il Node torna a trasmettere prima del SET. In URC01 `dmx_tx.c:RDM_RXIRQ` restituisce RDM_MALFORMED (mostrato come Invalid response) anche quando il primo byte della risposta attesa non è0xCC: un frame DMX del Node può dunque produrre quel messaggio. Non si afferma che ogni Invalid response osservato abbia lo stesso payload, non acquisito dal log CDC attuale.
+
+**Stato:** nessuna nuova modifica al codice per questa prova. La transazione già iniziata in RX è protetta dalla macchina a stati; l’acquisizione iniziale del bus tra due sorgenti non è garantita. Non aumentata arbitrariamente la finestra e non forzato DE dentro un frame attivo. Per una soluzione sulla stessa coppia occorre definire la cessione coordinata e la sospensione DMX durante configurazione; richiesta scelta all’utente perché il requisito originario chiedeva refresh sostanzialmente continuo. Nessuna sessione/keepalive o nuovo PID implementato in assenza di tale scelta. RDM con DMX OUT continuo richiede invece un percorso di gestione indipendente o topologia coordinata adeguata.
+
+## Debug durata RDM, Node separato e presentazione URC01 — 15 novembre 2026
+
+Baseline ADSW100 `743afc1`, URC01 `97a66d7`. Segnalazione hardware: scomparsa dalla discovery intorno a4 minuti, non recuperata dal riavvio del controller; Node e presentazione IPv4 sono problemi distinti. Sono state eseguite prima le prove sul codice non corretto, poi le modifiche ai soli percorsi riprodotti. Non è stata riprodotta una scadenza fissa a240 s nel test host; non dichiarare dimostrata la causa temporale sulla scheda.
+
+**Aggiornamento hardware dell’utente:** al guasto si arrestano anche la ricezione DMX e il lampeggio del LED DMX, mentre il pannello resta operativo. Il solo stato muted non spiega questa perdita: le correzioni discovery sotto sono difetti riprodotti separati, non una causa dimostrata dell’arresto della porta. CDC attuale espone soltanto rdm? di base; rdm_phy? richiede la programmazione della nuova build. Nessun reset o flash eseguito durante l’acquisizione, per preservare il guasto.
+
+### Evidenze prima della correzione
+
+- Nessun timer di disabilitazione RDM a240 s trovato. I divisori uint16 del task main vengono azzerati a10/100/1000/3000 chiamate; TIM6 mantiene impulsi e flag1 ms. Il contatore inattività LCD si ferma a30 s. `enabled` è impostato solo da RDM_Init; `muted` cambia solo all’init e con controlli discovery. Nessun reset generico periodico aggiunto.
+- Senza traffico, discovery dopo **600007 ms simulati** riuscita. Discovery ogni3 s più GET automatici: **603717 ms,1200 richieste,200 cicli** riusciti. Prova di volume: **70210 richieste in208280 ms**, oltre256 TN e65536 transazioni, senza blocco. DWT32 bit attraversa ripetutamente il wrap a480 MHz; ciò non equivale a una scadenza a4 minuti.
+- **Errore riprodotto sul codice originale:** dispositivo muted, UN_MUTE broadcast completo in pending, nuovo BREAK/SC prima del servizio main. RDM_Receive passava da CanReply prima di applicare il controllo: UART occupata → return → flag rimasto muted. Il nuovo DUB non riceve risposta. Il test falliva sull’assert di unmute. Lo stesso effetto esisteva con frame oltre la deadline di risposta: ReceiverExpire cancellava il pending prima del protocollo.
+- **Seconda perdita riprodotta:** un precedente GET occupava lo snapshot unico; il successivo UN_MUTE completo era scartato, senza essere elaborato. Un test dedicato falliva anche dopo la sola correzione di CanReply. Non era un overflow del TN o di un contatore16 bit: era perdita di messaggi/condivisione del buffer.
+
+Questi percorsi spiegano una persistenza muted fino al reset e una mancata recovery con discovery ripetuti se il pattern si ripete. **Il collegamento quantitativo con i circa240 s osservati non è ancora provato**: restano da misurare carico main, pattern URC01 automatico e stato fisico USART al guasto. I test host qui non eseguono l’intero superloop con latenze reali LCD/Ethernet/I²C o l’hardware NVIC/APB.
+
+### Aggiornamento dopo il riscontro dal display
+
+L’utente ha confermato che ADSW100 **non è più presente nel Manager**, mentre una nuova query CDC sullo stesso firmware ha restituito `rdm=1 uid=17FA:E7164570 rx=6219 late=0`. Quindi la scomparsa dal controller è avvenuta durante la sessione: la crescita di rx provava elaborazione di pacchetti validi, non successo discovery o ricezione delle risposte. Non equivale a RX fisicamente arrestata. L’eventuale perdita DMX nello stesso stato resta da verificare tornando a DMX Send senza reset. Nessuna sonda ST-LINK risulta collegata; la CDC caricata non permette ancora lo snapshot dei registri o del flag muted.
+
+Nel Manager URC01 `SyncDiscovery` incrementa misses dopo discovery completati con esito OK senza trovare l’UID: a3 lo marca offline, a6 rimuove la riga se non possiede IDENTIFY. L’intervallo nominale POLL_INTERVAL è5000 ms, cui si sommano i lavori in corso. Non è un timer fisso a240 s e non è stato modificato per nascondere la perdita.
+
+**Ulteriore difetto riprodotto in host:** pacchetto RDM completo in pending, BUSY USART attivo al primo giro main e rilasciato al giro successivo. Il vecchio `DMX512_Service` consumava lo snapshot prima di `RDM_Receive`; `CanReply` rifiutava BUSY e non restava alcun retry. Il test falliva sull’asserzione dello snapshot conservato. Correzione locale: finché lo stato è BUS_RDM_PENDING e BUSY persiste, lasciare il pacchetto in coda e riprovare nel superloop. La deadline originale continua a scadere, un nuovo BREAK mantiene la propria proprietà e nessun frame viene interrotto. Il contatore diagnostico `defer` misura i giri main rinviati, non il numero di pacchetti. Test successivi:100 richieste GET/SET/DUB, BUSY transitorio, BUSY oltre deadline e recupero della successiva richiesta. Nessuna attesa attiva o aumento timeout.
+
+La semantica hardware di BUSY come ricezione in corso è documentata da [ST RM0433, USART_ISR](https://community.st.com/ysqtg83639/attachments/ysqtg83639/stm32-mcu-products-forum/58237/1/RM0433.pdf). L’intervallo8 µs del mock è solo uno stimolo del test: **non è una misura né una conferma della sovrapposizione RXNE/BUSY su questa scheda**. Il collegamento tra questo difetto, le perdite UN_MUTE e la scomparsa reale richiede ancora rdm?/rdm_phy? estesi sulla nuova build o una misura del bus.
+
+### Guasto riprodotto sulla nuova build: turnaround TIM7 con ARR nullo
+
+**Confermato su hardware:** dopo presenza iniziale e valori aggiornati, l’utente segnala nuovamente la scomparsa dal Manager. Ultimo campione sano a327547 ms: TX0, bus0, RX1122, sent666, TIM7 CR1/DIER/SR=4/0/0. Primo campione bloccato a337718 ms: TX6 (attesa prima del BREAK RDM), bus6, DE0, USART CR1=2D/CR3=1/ISR=621090, NVIC USART1=1/0, TIM7=D/1/0, RX1135, sent670. Nei campioni successivi RX1135/sent670 restano fermi, mentre FE e byte continuano a crescere (a398796 ms: FE1263, byte36543), senza NE/ORE e senza fault TX. Quindi USART/ISR continuano a ricevere: il ramo `if(tx_state)` scarta i byte perché la risposta precedente non avanza. Questo spiega anche il DMX IN non recuperato, senza attribuirlo a muted.
+
+**Difetto software verificato:** `DMX512_SendPacket` calcola un turnaround residuo di1 µs quando la richiesta è servita a199 µs oppure almeno200 µs dalla fine del pacchetto (entro la deadline ammessa1800 µs). `TimerArm(1)` scrive ARR=0. Con autoreload nullo TIM6/TIM7 non contano: è documentato nel driver ST locale `stm32h7xx_ll_tim.h`, LL_TIM_SetAutoReload, e nel manuale STM32. Il watchdog TX usa lo stesso timer, quindi non può liberare questa fase ferma. Non è una scadenza fissa a240 s o overflow16 bit: dipende dal primo turnaround che cade nel percorso da1 µs. Il registro ARR non era incluso nello snapshot hardware caricato: il collegamento al valore nullo deriva dal percorso sorgente, dal pattern registri e dalla riproduzione host, non da una lettura diretta di ARR sulla scheda bloccata.
+
+**Prima della correzione:** aggiornato il mock per rispettare ARR nullo/CEN/OPM reali; il vecchio mock generava artificialmente UIF anche con ARR=0. Un test con ritardo199 µs fallisce con `tx=6 CR1=D DIER=1 SR=0 ARR=0`, coerente col blocco acquisito. **Correzione minima:** TimerArm impone almeno2 µs (ARR≥1); BREAK176 µs, MAB16 µs, finestre Node e watchdog30 ms restano invariati. Nella nuova build tim riporta CR1/DIER/SR/ARR/CNT per verificare anche l’autoreload reale. Aggiunto al massimo1 µs ai soli residui prima da1 µs; nessuna attesa o reset periodico USART. Dopo la correzione16 casi normali/discovery a0/1/198/199/200/201/500/1790 µs completano fino aTC e ritornano RX. Tutti i dieci gruppi host passano, inclusi ASan/UBSan e stress precedenti. Resta necessario riprogrammare questa correzione e ripetere hardware discovery/GET/SET, durata e ritorno DMX Send senza reset.
+
+**Confronto richiesto DRV_STG4:** ispezionati sia HEAD `93eefde` sia il working tree locale con modifiche preesistenti in `FIRMWARE_DRV_STG4`. In dmx.c DMX_TxService, BREAK/MAB avanzano tramite differenze unsigned di TIMER_Cycles; timer.c restituisce DWT->CYCCNT. DMX_Send avvia discovery con TXE o normale BeginBreak: non usa il one-shot TIM7 con ARR=durata−1. In HEAD lo stesso confronto DWT si trova in DMX_Task; nella copia locale corrente in DMX_TxService. Pertanto questo specifico difetto non è presente nel percorso DMX/RDM esaminato. Non è una qualificazione generale del firmware DRV_STG4; nessuna modifica applicata al riferimento.
+
+Build corretta TIM7: `/private/tmp/adsw100-rdm-timer-fix/ADSW100.elf`, SHA-256 `2b6da259be4340d9eaf9b8201218b4c411e631142f3978dc869df8c5b7db8d13`. Build ARM completa150 unità PASS, dieci gruppi host PASS. File distinto dal precedente ELF diagnostico ancora caricato sulla scheda; nessuna programmazione eseguita dall’agente. Il collaudo hardware della correzione ARR resta da eseguire.
+
+### Nuova build caricata dall’utente: campioni iniziali
+
+Il15 novembre2026 l’utente ha confermato programmazione della build diagnostica, RDM Manager avviato e ADSW100 **presente con valori aggiornati**. Nessun aggiornamento URC01 eseguito durante questa prova. Il monitor è stato riaperto dopo la disconnessione USB della programmazione; primo snapshot valido a52743 ms: ruolo0/0 (IN), DE0, NVIC1/0, CR1=2D, CR3=1, ISR=621090, RX123, TX completati75, NE/ORE0 e fault0. A164731 ms: RX533, TX completati325, stessi registri/stati e nessun errore NE/ORE; query discovery con mute/unmute/DUB e risposte accodate in crescita. FE segue i BREAK e non è di per sé un errore. Nessun reset o cambio configurazione dall’agente; questi sono campioni iniziali, non ancora un collaudo di durata concluso.
+
+### Build diagnostica proposta per il nuovo collaudo
+
+ELF compilato e verificato: `/private/tmp/adsw100-rdm-lifetime/ADSW100.elf`, SHA-256 `15fbd7116568978d032482ca08569bd6368ec422c3e4f75d403f13e89c73419a`. Include correzioni riprodotte e query estese; nessun flash eseguito dall’agente. L’utente ha scelto di caricare questa build e ripetere il test. In attesa della programmazione, il monitor CDC alterna esclusivamente rdm? e rdm_phy? ogni5 s, con gestione disconnessione/riconnessione. Una risposta ERROR a rdm_phy? indica che la diagnostica estesa non è ancora disponibile sul firmware caricato. I nuovi dati hardware saranno registrati soltanto dopo la loro acquisizione.
+
+### Ritorno DMX Send senza reset: esito negativo
+
+L’utente ha poi riportato **LED DMX spento e nessuna risposta DMX** passando da Manager a DMX Send senza resettare ADSW100. Query CDC subito dopo: `rdm=1 uid=17FA:E7164570 rx=6219 late=0`. Il valore RDM fermo in DMX Send è atteso, perché DMX non incrementa rx RDM; non consente di dedurre se arrivino byte UART o BREAK. La porta non torna a pubblicare DMX valido, mentre CDC/main restano operativi. Questo esclude la sola rimozione grafica o il solo muted come spiegazione completa. Non dimostrata invece una disabilitazione fisica USART: manca ancora lo snapshot al guasto.
+
+La nuova rdm_phy? comprende anche `irq=enable/pending` NVIC USART1, `pin` RX istantaneo e `role=applicato/configurato`, oltre a DE, CR1/CR3/ISR, stati e contatori. Nessuna lettura RDR, cancellazione flag, reset periferica o modifica di configurazione. La build precedente ancora caricata non offre questi dati; per osservare lo stato originale serve una sonda in hot-plug senza reset, oppure caricare la nuova build e riprodurre il guasto. Nessuna sonda era presente al censimento. Il difetto BUSY corretto non viene presentato come soluzione dimostrata dell’arresto DMX.
+
+### Correzioni mirate ADSW100
+
+| File/funzione | Modifica effettiva |
+| --- | --- |
+| rdm.c RDM_Receive | MUTE/UN_MUTE con CRC, destinazione, CC, root e PDL validi agiscono sul flag prima di CanReply/deadline. Broadcast non risponde; unicast risponde soltanto se ancora consentito. Nessun ACK tardivo o tentativo TX nel frame successivo. Gli altri PID mantengono i controlli preesistenti. |
+| dmx_512.c ReceiverExpire | Scade la proprietà della transazione, non la validità di un comando che non deve rispondere. Il messaggio completo rimane nello snapshot main; una richiesta scaduta che richieda risposta continua a essere rifiutata. |
+| dmx_512.c RX/main | Due snapshot statici FIFO invece di uno, +257 byte di payload più metadati. Copia/pop sotto sezione critica; nessuna allocazione né PID elaborato in ISR. Un terzo pacchetto prima del servizio è scartato e conteggiato; due UN_MUTE sono conservati e il DUB può essere ritentato. Nessuna promessa di coda illimitata sotto main fermo. |
+| NodeTryStart / main | La proprietà RX attiva blocca il TX; un messaggio già scaduto e conservato per il main non arresta il Node per sempre. Il main non rimpiazza lo stato con PROCESSING mentre un TX è attivo. Nessun taglio del frame fisico, DE rilasciato al TC o su watchdog TX. |
+| rdm.c / dmx_512.c / usb_debug.c | Diagnostica CDC di sola lettura, buffer risposta320 byte. Nessuna stampa o formattazione in ISR. Nessun comando reset/clear aggiunto per mascherare il guasto. |
+
+La separazione controllo/risposta segue [E1.20-2010 §7.6.3/7.6.4 e broadcast §5.3](https://getdlight.com/media/kunena/attachments/42/ANSI_E1-20_2010.pdf). Non è stato introdotto un auto-unmute a tempo: dopo MUTE il dispositivo deve restare muted finché riceve UN_MUTE o viene reinizializzato, mentre GET/SET restano operativi. UID, branding, timeout DMX che spegne i relè, Art-Net/sACN, TIM6, clock, EEPROM e watchdog restano invariati.
+
+### Diagnostica da acquisire sul banco
+
+- `rdm?`: mantiene enabled/UID/rx/late, aggiunge `muted`, `mute`, `unmute`, `dub`, `queued`, `bad`, `busy`. `rx` conta pacchetti validati nel main; `queued` è una risposta discovery accodata, non la prova che URC01 l’abbia ricevuta. La deadline main resta1800 µs; i controlli discovery validi possono agire oltre tale limite senza risposta.
+- `rdm_phy?`: `ms`, stato TX, stato bus, profondità `pending`0..2, DE, CR1/CR3/ISR USART, CR1/DIER/SR TIM7, pacchetti RX completi, scadenze, scarti coda, FE/NE/ORE, TC completati e guasti TX, byte USART RXNE, frame DMX pubblicabili e rinvii main per BUSY. Snapshot IRQ-safe; la query non legge RDR né cancella flag, non modifica direzione/stati o EEPROM.
+- FE include i BREAK validi, non equivale a errori di linea. `exp` include timeout di RX/pending/ascolto risposta altrui. Stati TX:0 RX,1 BREAK,2 MAB,3 byte TX,4 attesaTC,5 turnaround discovery,6 turnaround normale. Stati bus:0 IDLE,1 SC,2 RDM RX,3 DMX RX,4 PENDING,5 PROCESSING,6 REPLY,7 OTHER_REPLY.
+- Rilevare entrambe le query prima e dopo la perdita: confrontare `ms` e conteggi per distinguere tempo/volume, `unmute` applicati da `dub` senza risposta, pacchetti ingressi da CRC/scarti, RE/RXNEIE e DE da stato muted. Non dedurre che la causa sia muted se PHY mostra RE spento, TX bloccato, UART senza attività o main non responsivo.
+
+### Node OUT: risultato separato
+
+La macchina a stati introdotta nel precedente incremento resta valida per richieste **iniziate in RX**: BREAK/SC proteggono fino a pacchetto completo e TC della risposta, con soli timeout di sicurezza. Test per entrambi i Node: GET/SET in RX completano; una richiesta iniettata durante il proprio TX non viene ricevuta né applicata. Questo è previsto, perché il ricevitore USART è disabilitato durante guida del transceiver.
+
+URC01 controller e ADSW100 Node sulla stessa porta/coppia costituiscono due sorgenti. Nessun timer può garantire che il controller esterno inizi proprio nella pausa RX; non si forza una risposta o un BREAK dentro un frame in corso. Per un singolo controller esterno stabile, usare ADSW100 IN; per Node continuo con controllo indipendente serve topologia coordinata/porta separata/gateway, fuori da questa correzione. Non ampliate finestre2/20 ms, lease controller2 s o refresh, non alterati parser Art-Net/sACN.
+
+### Prove dopo la correzione e limiti
+
+Dieci gruppi di `tests/test_stabilization.py` PASS. NODE_RDM eseguito con **AddressSanitizer e UndefinedBehaviorSanitizer**: dieci minuti senza traffico, altri dieci minuti muted senza auto-reset, dieci minuti con discovery periodico, ulteriori614928 ms con15000 frame DMX512 e200 cicli discovery alternati sullo stesso ingresso,70210 transazioni con TN wrap, wrap di HAL_GetTick, GET/SET continui, UN_MUTE broadcast ritardato5 ms, nuovo BREAK prima del main, due snapshot e overflow contato, UN_MUTE unicast tardivo senza ACK e CRC invalido che non cambia mute. Verificato che fine risposta ripristini RE/RXNEIE e DE basso. Le prove Node precedenti e le regressioni EEPROM/relè/protocolli restano PASS.
+
+Build completa GCC ARM150 unità in `/private/tmp/adsw100-rdm-lifetime`; nessuna programmazione hardware eseguita dall’agente. Restano: collaudo IN oltre10–30 minuti con/senza URC01, collegamento del controller dopo almeno5 minuti senza traffico, confronto attorno a240 s, capture CDC al guasto, misura BREAK/MAB/TC e latenze main sotto carico. La correzione dei percorsi riprodotti non è ancora una dimostrazione della sparizione hardware a4 minuti.
+
+### Acquisizione CDC sul firmware già caricato
+
+Su autorizzazione utente, identificate le porte `/dev/cu.usbmodem3571326331331` (ADSW100) e `/dev/cu.usbmodem356E326C31331` (URC01). Nessun reset, flash, SET o comando RS485 inviato dall’agente. L’utente aveva resettato ADSW100 e URC01 era inizialmente in DMX Send: `rdm?` riportava `rx=0 late=0`. Il passaggio manuale a RDM Manager è stato confermato dall’utente alle12:19:07 UTC. La query CDC ogni20 s ha mostrato `rx=47` a100 s dalla raccolta, `rx=560` a240 s, `rx=1073` a380 s, sempre `late=0`. Il tempo della raccolta non è il tempo dal reset. A380 s erano trascorsi circa cinque minuti in Manager; il contatore validato continuava a crescere. Questo dimostra elaborazione delle richieste, non ricezione delle risposte dal controller, né corretto DMX IN senza un nuovo frame DMX Send. La diagnostica caricata non include ancora i registri della nuova query PHY; questa prova non identifica la causa del precedente arresto.
+
+Ultimo campione acquisito dopo oltre dieci minuti dal passaggio a Manager: `rdm=1 uid=17FA:E7164570 rx=2365 late=0` (registrazione conclusa 2026-11-15T12:29:49+00:00). Il contatore continuava a crescere; il successivo riscontro utente conferma tuttavia la scomparsa dal display URC01, con ulteriore rx=6219. Il successivo ritorno a DMX Send senza reset è fallito: LED spento e relè non rispondenti, CDC sempre attiva; vedere aggiornamento sopra. Ripetere anche senza interrogazioni CDC per confrontare le condizioni del guasto originale. Le nuove correzioni non erano caricate, quindi questo esito non può essere attribuito alla nuova build.
+
+### Presentazione IPv4 URC01
+
+Modifica separata sotto URC01: `ON/OFF (Interface 1)`, IPv4 puntato/prefix con interfaccia distinta, gateway puntato, `DNS 1: ...`/`DNS 2: ...`. Nomi degli editor esplicitano input numerico `IF 0/1`, `IF A B C D bits`, `0 A B C D`, `index A B C D`; l’input parte vuoto nel keypad esistente. **NetworkEncode, selettori GET e payload E1.37-2 invariati**, verificati dal confronto del codec e dai test su due interfacce32 bit. Non modificati Chora o Graphics. Il display non viene riletto come payload SET.
 
 ## Correzione transazioni RDM Node e PID rete — 15 novembre 2026
 
@@ -116,7 +392,7 @@ La RS485 è half-duplex: durante TX RE è disabilitato. Traffico RDM viene ricev
 
 Manufacturer ID comune **0x17FA**, già autorizzato per tutti i brand. UID = 17FA + ultimi quattro byte EUI-48 fisico, con whitelist dei 15 OUI verificati nel riferimento DRV_STG4 (ultimo byte OUI distinto). Preserva seriale e discriminante OUI, senza hash. Errore I²C/OUI non riconosciuto: RDM disabilitato, DMX/Node restano utilizzabili; nessun UID fittizio. Da censire unicità nell’intero parco AXN e BOM E48/E64.
 
-Model ID numerico **0xFFFF è un placeholder non assegnato**, non un identificativo inventato presentato come registrato. Nei riferimenti esaminati compaiono RSH7 modello 0x0001, URC01 0x0100, DRV_STG4 0x005E, nel dominio storico 0x0206. Ottenere l’assegnazione ADSW100/NODIM01 dal registro completo manufacturer 17FA prima del rilascio. Model description/manufacturer label provengono da Brand_Current, non da stringhe replicate. OEM Art-Net non assegnato: nessuna sostituzione con quello RSH7.
+Nel primo incremento il Model ID numerico **0xFFFF era un placeholder non assegnato**; dal15 novembre2026 e' sostituito dall’assegnazione utente **96/0x0060 sotto17FA**, comune ai tre brand. Nei riferimenti esaminati compaiono RSH7 modello 0x0001, URC01 0x0100, DRV_STG4 0x005E, nel dominio storico 0x0206. Assegnazione ADSW100/NODIM01 registrata nel registro locale, distinta dall’OEM Art-Net. Model description/manufacturer label provengono da Brand_Current, non da stringhe replicate. OEM Art-Net non assegnato: nessuna sostituzione con quello RSH7.
 
 Discovery UNIQUE_BRANCH/MUTE/UNMUTE, risposta discovery senza BREAK; risposte normali ACK/NACK con checksum, PDL, transaction e sub-device verificati. Root device; SET broadcast senza risposta, GET broadcast ignorato; sub-device inesistenti NACK. Turnaround pianificato a 200 µs dal timestamp ultimo byte (margine sul minimo), richieste già oltre 2 ms scartate prima di applicare SET. Questo protegge da risposte tardive, ma non garantisce che il main serva ogni richiesta sotto carico: misure obbligatorie.
 
@@ -167,7 +443,7 @@ Riferimenti primari per identificativi/formati e vincolo half-duplex: [E1.20 EST
 | Rischio, alto | dmx_512.c ISR/SendPacket | Durata sezioni critiche e latenza main non misurate; verificare slot 44 µs e turnaround sotto display/NFC/USB/Ethernet. Richieste tardive vengono scartate. |
 | Verifica HW, alto | PD8 DE/RE, PB14/PB15, TIM7 | Confermare cablaggio RE/DE, livelli e tempo rilascio bus al TC; misurare BREAK/MAB, baud/stop, refresh e assenza impulsi spurii in cambio GPIO/AF. |
 | Limite fisico, alto | NodeTryStart/finestre RX | Nessun ascolto durante TX né arbitraggio multi-controller garantito. Testare sorgente esterna che si attiva durante Node; sospensione solo dopo rilevamento. |
-| Da verificare, medio | rdm.c RDM_Init / rdm.h Model ID | Censire tutti gli UID/OUI fisici sotto 17FA e assegnare Model ID; con EUI non riconosciuto RDM resta disabilitato. |
+| Parzialmente risolto | rdm.c RDM_Init / rdm.h Model ID | Model ID96 assegnato dall’utente e implementato; resta il censimento UID/OUI sotto17FA. Con EUI non riconosciuto RDM resta disabilitato. |
 | Limite confermato, medio | RDM_Task/DEVICE_LABEL | Save differito non atomico multi-parametro e label volatile. Documentare al controller e testare power-cut reali; non aggiungere CRC/slot/stringhe EEPROM non autorizzati. |
 
 ### Test effettivamente eseguiti

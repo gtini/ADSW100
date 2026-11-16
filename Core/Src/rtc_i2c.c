@@ -19,7 +19,7 @@ __attribute__((weak)) void RTC_DrawText(const char *s) { (void)s; }
 /* =================== Accesso I2C di base ================== */
 bool RTC_I2C_ReadRegs(uint8_t startReg, uint8_t *buf, uint16_t len)
 {
-    if (buf == NULL || len == 0u) return false;
+    if (buf == NULL || len == 0u || ee_nfc_bus_reserved) return false;
     HAL_StatusTypeDef st = HAL_I2C_Mem_Read(&RTC_I2C_HANDLE,
                                             MCP7940_I2C_ADDR,
                                             startReg,
@@ -32,7 +32,7 @@ bool RTC_I2C_ReadRegs(uint8_t startReg, uint8_t *buf, uint16_t len)
 
 bool RTC_I2C_WriteRegs(uint8_t startReg, const uint8_t *buf, uint16_t len)
 {
-    if (buf == NULL || len == 0u) return false;
+    if (buf == NULL || len == 0u || ee_nfc_bus_reserved) return false;
     HAL_StatusTypeDef st = HAL_I2C_Mem_Write(&RTC_I2C_HANDLE,
                                              MCP7940_I2C_ADDR,
                                              startReg,

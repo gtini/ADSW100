@@ -301,5 +301,16 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+/* IRQ I2C1 del trasporto NTAG: priorità inferiore a USART e timer DMX/relè. */
+extern I2C_HandleTypeDef hi2c1;
+void I2C1_EV_IRQHandler(void)
+{
+    NFC_I2C_EventIRQ();
+}
+void I2C1_ER_IRQHandler(void)
+{
+    NFC_I2C_ErrorIRQ();
+}
+
 
 /* USER CODE END 1 */

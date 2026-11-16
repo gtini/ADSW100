@@ -17,7 +17,7 @@
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
 /* Risposte di servizio persistenti e prioritarie rispetto ai log diagnostici. */
-static char s_service_response[64];
+static char s_service_response[320];
 static bool s_service_response_pending;
 static bool s_factory_window_closed;
 
@@ -134,6 +134,38 @@ void USB_ServiceTask(void)
     bool code_query = strcmp(line, "menu_code?") == 0;
     bool brand_write = strncmp(line, "brand=", 6) == 0;
     bool code_write = strncmp(line, "menu_code=", 10) == 0;
+    if (strcmp(line, "nfc=0") == 0 || strcmp(line, "nfc=1") == 0)
+    {
+        NFC_SetEnabled(line[4] == '1');
+        snprintf(s_service_response, sizeof s_service_response, "OK VOLATILE CHECK i2c?\r\n");
+        s_service_response_pending = true;
+        return;
+    }
+    if (strcmp(line, "ee?") == 0 || strcmp(line, "i2c?") == 0)
+    {
+        if (line[0] == 'e') EE_FormatDiagnostics(s_service_response, sizeof s_service_response);
+        else NFC_FormatLiveDiagnostics(s_service_response, sizeof s_service_response);
+        s_service_response_pending = true;
+        return;
+    }
+    if (strcmp(line, "nfc_i2c?") == 0)
+    {
+        NFC_FormatBusDiagnostics(s_service_response, sizeof s_service_response);
+        s_service_response_pending = true;
+        return;
+    }
+    if (strcmp(line, "nfc?") == 0)
+    {
+        NFC_FormatDiagnostics(s_service_response, sizeof s_service_response);
+        s_service_response_pending = true;
+        return;
+    }
+    if (strcmp(line, "rdm_phy?") == 0)
+    {
+        DMX512_FormatDiagnostics(s_service_response, sizeof s_service_response);
+        s_service_response_pending = true;
+        return;
+    }
     if (strcmp(line, "rdm?") == 0)
     {
         RDM_FormatDiagnostics(s_service_response, sizeof s_service_response);

@@ -1559,3 +1559,9 @@ void UI_OnModeRuntime(uint8_t mode)
 {
     dmx_mode = mode;
 }
+
+/* Sola interrogazione: nessun cambiamento alla navigazione o ai parametri. */
+bool UI_ConfigActive(void)
+{
+    return g_ui.state != UI_HOME;
+}
