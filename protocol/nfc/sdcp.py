@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Fondazione SDCP2 offline: nessun accesso a firmware, EEPROM fisica o rete."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
@@ -198,41 +197,6 @@ def compile_model(registry, catalog):
             'name': catalog['name'], 'category': int(catalog['category'], 16), 'parameters': params}
 
 
-def contract(model):
-    result = struct.pack('>HH', len(model['parameters']), model['category'])
-    for p in model['parameters']:
-        ns, man, pid = key_parts(p['key'])
-        raw = struct.pack('>BHHBBBBB', ns, man, pid, TYPES.index(p['type']),
-                          SELECTORS.index(p['selector']), int(p['access'] == 'rw'), UNITS.index(p['unit']), len(p['selectors']))
-        width = 0 if p['selector'] == 'none' else 1 if p['selector'] == 'u8' else 4
-        raw += b''.join(x.to_bytes(width, 'big') if width else b'' for x in p['selectors'])
-        raw += struct.pack('>qq', p['minimum'], p['maximum'])
-        default = bytes.fromhex(p['default'])
-        raw += bytes([len(default)]) + default + bytes([len(p['choices'])])
-        raw += b''.join(integer_bytes(c['value'], p['type']) for c in p['choices'])
-        raw += lstring(p['semantic']) + lstring(p['binding'])
-        result += struct.pack('>H', len(raw)) + raw
-    return result
-
-
-def fingerprint(model):
-    return hashlib.sha256(b'SDCP2-SCHEMA\0' + struct.pack('>HHI', model['manufacturer'],
-                          model['model'], model['revision']) + contract(model)).digest()
-
-
-def catalog_binary(model):
-    c = contract(model)
-    labels = lstring(model['name'])
-    for p in model['parameters']:
-        labels += lstring(p['label']) + b''.join(lstring(x['label']) for x in p['choices'])
-    length = 60 + len(c) + len(labels) + 4
-    require(length <= MAX_CATALOG, 'Catalogo troppo grande')
-    header = struct.pack('>4sHHIHHI32sII', b'SDC2', 1, 0, length, model['manufacturer'],
-                         model['model'], model['revision'], fingerprint(model), len(c), len(labels))
-    raw = header + c + labels
-    return raw + struct.pack('>I', zlib.crc32(raw))
-
-
 class Reader:
     def __init__(self, data):
         self.data, self.pos = data, 0
@@ -256,51 +220,6 @@ class Reader:
 
     def done(self):
         require(self.pos == len(self.data), 'Dati residui')
-
-
-def decode_catalog(data):
-    require(64 <= len(data) <= MAX_CATALOG, 'Lunghezza catalogo')
-    require(zlib.crc32(data[:-4]) == int.from_bytes(data[-4:], 'big'), 'CRC catalogo')
-    h = Reader(data)
-    magic, version, flags, total, man, mod, rev, digest, clen, plen = h.unpack('>4sHHIHHI32sII')
-    require((magic, version, flags, total) == (b'SDC2', 1, 0, len(data)) and man not in (0, 65535) and rev, 'Header catalogo')
-    c, labels = Reader(h.take(clen)), Reader(h.take(plen))
-    h.take(4); h.done()
-    count, category = c.unpack('>HH')
-    require(1 <= count <= 64, 'Numero parametri')
-    model = dict(manufacturer=man, model=mod, revision=rev, category=category, name=labels.text(), parameters=[])
-    for _ in range(count):
-        size, = c.unpack('>H'); r = Reader(c.take(size))
-        ns, manufacturer, pid, typ, selector, access, unit, nsel = r.unpack('>BHHBBBBB')
-        require(ns in (0, 1) and typ in range(1, len(TYPES)) and selector < 3 and access < 2 and unit < len(UNITS) and 1 <= nsel <= 16, 'Tipo/codice catalogo')
-        require((ns == 0 and manufacturer == 0 and pid < 0x8000) or
-                (ns == 1 and manufacturer == man and 0x8000 <= pid <= 0xFFDF), 'Chiave catalogo')
-        key = f'std:{pid:04X}' if ns == 0 else f'mfr:{manufacturer:04X}:{pid:04X}'
-        w = (0, 1, 4)[selector]
-        sels = [int.from_bytes(r.take(w), 'big') for _ in range(nsel)]
-        lo, hi = r.unpack('>qq'); default = r.take(r.byte())
-        p = dict(key=key, type=TYPES[typ], selector=SELECTORS[selector], access='rw' if access else 'r', unit=UNITS[unit],
-                 selectors=sels, minimum=lo, maximum=hi, default=default.hex().upper(), choices=[])
-        nc = r.byte(); require(nc <= 64, 'Troppe scelte')
-        require(not nc or p['type'] in ('u8', 'u16', 'u32', 'i8', 'i16', 'i32', 'bool'), 'Enum non scalare')
-        for _ in range(nc):
-            value = int.from_bytes(r.take(WIDTH[p['type']]), 'big', signed=p['type'].startswith('i'))
-            p['choices'].append(dict(value=value, label='placeholder'))
-        require([x['value'] for x in p['choices']] == sorted({x['value'] for x in p['choices']}), 'Ordine enum')
-        p['semantic'], p['binding'] = r.text(), r.text(); r.done()
-        p['label'] = labels.text()
-        for choice in p['choices']:
-            choice['label'] = labels.text()
-        require(lo <= hi and sels == sorted(set(sels)) and (selector != 0 or sels == [0]), 'Range/selettori catalogo')
-        enum_check(p); check_value(p, default)
-        model['parameters'].append(p)
-    c.done(); labels.done()
-    keys = [key_parts(p['key']) for p in model['parameters']]
-    require(keys == sorted(set(keys)), 'Ordine catalogo')
-    require(sum(len(p['selectors']) for p in model['parameters']) <= 64, 'Troppe istanze')
-    require(fingerprint(model) == digest, 'Fingerprint schema errato')
-    require(catalog_binary(model) == data, 'Catalogo non canonico')
-    return model
 
 
 def instances(model):
@@ -327,7 +246,7 @@ def encode_sdcp(model, values=None, kind=0, revision=1, request=0, applied=0,
                            model['category'],
                            software, model['manufacturer'], device)
     val = b''.join(struct.pack('>HB', pid, len(sel)) + sel + bytes([len(v)]) + v for pid, sel, v in values)
-    body = section(1, identity) + section(2, val) + section(7, struct.pack('>I', model['revision']) + fingerprint(model))
+    body = section(1, identity) + section(2, val) + section(7, struct.pack('>I', model['revision']))
     body += section(0x80, struct.pack('>BBIII', 1, kind, revision, request, applied))
     raw = b'SD\x20\0' + struct.pack('>H', 10 + len(body)) + body
     result = raw + struct.pack('>I', zlib.crc32(raw))
@@ -349,7 +268,7 @@ def decode_sdcp(data, model=None):
         sections[sid] = (flags, b); previous = sid
     require(all(x in sections for x in (1, 2, 7, 0x80)), 'Sezione mancante')
     identity, ref, sync = [sections[x][1] for x in (1, 7, 0x80)]
-    require(len(identity) == 16 and len(ref) == 36 and len(sync) == 14, 'Dimensione sezione')
+    require(len(identity) == 16 and len(ref) == 4 and len(sync) == 14, 'Dimensione sezione')
     man, mod, cat, sw, uidman, dev = struct.unpack('>HHHIHI', identity)
     require(man not in (0, 65535) and uidman == man and dev != 0xFFFFFFFF and int.from_bytes(ref[:4], 'big') != 0, 'Identita/schema')
     ver, kind, rev, req, applied = struct.unpack('>BBIII', sync)
@@ -365,7 +284,7 @@ def decode_sdcp(data, model=None):
     keys = [(p, s) for p, s, v in values]
     require(keys and keys == sorted(set(keys)), 'Chiavi duplicate/non ordinate')
     if model:
-        require((man, mod, cat) == (model['manufacturer'], model['model'], model['category']) and ref == struct.pack('>I', model['revision']) + fingerprint(model), 'Schema/destinatario non corrispondente')
+        require((man, mod, cat) == (model['manufacturer'], model['model'], model['category']) and ref == struct.pack('>I', model['revision']), 'Schema/destinatario non corrispondente')
         known = instances(model)
         require(set(keys) == set(known), 'Insieme parametri non corrispondente')
         for pid, sel, value in values:
@@ -457,108 +376,10 @@ def ads_network_encode(image, values):
     return bytes(candidate)
 
 
-def canonical_json(value):
-    # Sottoinsieme canonico: nessun float, Unicode, slash escaping o numero ambiguo.
-    def check(v):
-        if type(v) is dict:
-            for k, item in v.items():
-                require(type(k) is str and k.isascii(), 'Chiave manifest non ASCII'); check(item)
-        elif type(v) is list:
-            for item in v:
-                check(item)
-        elif type(v) is str:
-            require(v.isascii(), 'Manifest non ASCII')
-        else:
-            require(type(v) is int and 0 <= v <= 2**32 - 1, 'Numero manifest invalido')
-    check(value)
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
-
-
-def signing_input(manifest):
-    require(set(manifest) == {'format', 'release', 'key_id', 'files'} and manifest['format'] == 1,
-            'Manifest non riconosciuto')
-    require(type(manifest['release']) is int and 1 <= manifest['release'] <= 0xFFFFFFFF, 'Release manifest')
-    require(re.fullmatch('[a-z0-9_-]{1,32}', manifest['key_id']) is not None, 'Key ID')
-    paths = []
-    for f in manifest['files']:
-        require(set(f) == {'path', 'size', 'sha256'}, 'Record manifest')
-        require(re.fullmatch('[A-Z0-9_/-]+[.]sdcat', f['path']) is not None and
-                not f['path'].startswith('/') and '..' not in f['path'] and '//' not in f['path'], 'Path manifest')
-        require(type(f['size']) is int and 64 <= f['size'] <= MAX_CATALOG and
-                re.fullmatch('[0-9a-f]{64}', f['sha256']) is not None, 'Dimensione/hash manifest')
-        paths.append(f['path'])
-    require(1 <= len(paths) <= 256 and paths == sorted(set(paths)), 'Ordine/file manifest')
-    return b'SDCP2-CATALOG-PACKAGE\0' + canonical_json(manifest)
-
-
-def decode_manifest(data):
-    require(type(data) is bytes and len(data) <= MAX_CATALOG, 'Dimensione manifest')
-    manifest = json.loads(data.decode('ascii'), object_pairs_hook=pairs)
-    signing_input(manifest)
-    require(canonical_json(manifest) == data, 'Manifest non canonico')
-    return manifest
-
-
-def verify_package(manifest, signature, files, trusted_keys, verify):
-    """Contratto per il futuro verificatore Ed25519; nessuna fiducia implicita."""
-    message = signing_input(manifest)
-    key = trusted_keys.get(manifest['key_id'])
-    require(type(key) is bytes and len(key) == 32 and type(signature) is bytes and len(signature) == 64,
-            'Chiave/firma mancante o ignota')
-    require(callable(verify) and verify(key, message, signature) is True, 'Firma non verificata')
-    require(set(files) == {f['path'] for f in manifest['files']}, 'Insieme file pacchetto')
-    for f in manifest['files']:
-        raw = files[f['path']]
-        require(len(raw) == f['size'] and hashlib.sha256(raw).hexdigest() == f['sha256'], 'File alterato')
-        decode_catalog(raw)
-    return True
-
-
-def generate(output, release=1, key_id='release-1'):
-    output = Path(output); output.mkdir(parents=True, exist_ok=True)
-    registry = load(ROOT / 'registry.json')
-    files = []
-    for path in sorted((ROOT / 'catalogs').glob('*.json')):
-        model = compile_model(registry, load(path)); binary = catalog_binary(model)
-        name = path.stem + '.sdcat'; (output / name).write_bytes(binary)
-        files.append(dict(path=name, size=len(binary), sha256=hashlib.sha256(binary).hexdigest()))
-        (output / (path.stem + '.fingerprint')).write_bytes((fingerprint(model).hex() + '\n').encode('ascii'))
-    manifest = dict(format=1, release=release, key_id=key_id, files=files)
-    (output / 'manifest.json').write_bytes(canonical_json(manifest))
-    (output / 'signing-input.bin').write_bytes(signing_input(manifest))
-    # Nessuna firma inventata o chiave privata: il risultato non e un pacchetto fidato.
-    return manifest
-
-
-def firmware_header(model):
-    """Esporta dati dal catalogo congelato, senza introdurre binding di modello nel client."""
-    rows = []
-    for (pid, selector), p in sorted(instances(model).items()):
-        rows.append('    {0x%04Xu, %du, %du, %du, 0x%08Xu},' %
-                    (pid, len(selector), WIDTH[p['type']], TYPES.index(p['type']), int.from_bytes(selector, 'big')))
-    return ('/* Generato da protocol/nfc/sdcp.py: non modificare manualmente. */\n'
-            '#ifndef NFC_CATALOG_H\n#define NFC_CATALOG_H\n#include <stdint.h>\n'
-            '#define NFC_SCHEMA_REVISION %du\n#define NFC_CATALOG_MANUFACTURER 0x%04Xu\n'
-            '#define NFC_CATALOG_MODEL 0x%04Xu\n#define NFC_CATALOG_CATEGORY 0x%04Xu\n' %
-            (model['revision'], model['manufacturer'], model['model'], model['category']) +
-            'static const uint8_t nfc_schema_hash[32] =\n{' +
-            ','.join('0x%02X' % x for x in fingerprint(model)) + '};\n'
-            'typedef struct\n{\n    uint16_t pid;\n    uint8_t selector_size, value_size, type;\n    uint32_t selector;\n} nfc_field_t;\n'
-            'static const nfc_field_t nfc_fields[] =\n{\n' + '\n'.join(rows) +
-            '\n};\n#define NFC_FIELD_COUNT (sizeof nfc_fields / sizeof nfc_fields[0])\n#endif\n')
-
-
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--output', required=True, help='Directory artefatti non firmati')
-    parser.add_argument('--release', type=int, default=1)
-    parser.add_argument('--key-id', default='release-1')
-    parser.add_argument('--firmware-header', help='Header dati C opzionale')
-    parser.add_argument('--model', default='ADSW100', help='Nome sorgente catalogo per header')
-    args = parser.parse_args()
-    if args.firmware_header:
-        require(re.fullmatch('[A-Za-z0-9_]+', args.model) is not None, 'Nome modello')
-        model = compile_model(load(ROOT / 'registry.json'), load(ROOT / 'catalogs' / (args.model + '.json')))
-        Path(args.firmware_header).write_bytes(firmware_header(model).encode('ascii'))
-    for item in generate(args.output, args.release, args.key_id)['files']:
-        print(item['path'], item['size'], item['sha256'])
+    # Strumento facoltativo host: nessuna generazione C o dipendenza nella build.
+    registry = load(ROOT / 'registry.json')
+    for path in sorted((ROOT / 'catalogs').glob('*.json')):
+        model = compile_model(registry, load(path))
+        decode_sdcp(encode_sdcp(model), model)
+        print(path.stem, 'schema', model['revision'], 'OK')

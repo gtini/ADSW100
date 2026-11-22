@@ -649,3 +649,15 @@ Risorse da qualificare: flash H743 2 MiB, RAM e budget misurati da map (nessun m
 ## 10. Esito e verifiche mancanti
 
 Priorità: sicurezza impulsi, snapshot DMX e tempo reale, EEPROM senza perdita, parser/sorgenti rete, poi nuove funzioni. Dettagli incrementali in [ROADMAP_V2.md](ROADMAP_V2.md). Restano misure hardware, layout reale modulo/SVG, chip EEPROM/NFC, pin RDM, registrazioni e censimento ID definitivo. Nessun sorgente, configurazione, tag o commit di riferimento è stato modificato dall'audit.
+
+
+## NFC — decisione definitiva 17 novembre 2026
+
+Il contratto corrente sostituisce la proposta hash/firma descritta negli audit
+precedenti. Compatibilita' soltanto Manufacturer ID, Model ID, Schema Revision
+manuale; sezione07 quattro byte, nessuna costante ROM digest o generazione durante
+la build. CRC32 e controlli REQUEST/ACK invariati. ST2FW v3 unico da96byte,
+JSON facoltativo senza confronto PID/BIN o versione firmware. Legacy ST2 e
+bootloader dei payload invariati. Documentazione normativa in protocol/nfc e
+ST2FW_V3_INTEGRAZIONE.md. Test NFC ADSW: 21 transazioni,170 fault I/O,68 tagli
+REQUEST,24 Init PASS; build ARM150unita' PASS. Nessun flash, commit o pubblicazione.

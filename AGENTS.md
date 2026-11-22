@@ -3,7 +3,7 @@
 ## Ambito e autorizzazione
 
 - Ambito firmware precedentemente autorizzato: RDM responder, porta DMX IN / ArtNet Node / sACN Node, menu DMX e configurazione condivisa. Branding e migrazione precedenti validati dall’utente nel commit `1e71467`; baseline 480 MHz in `0b5fa6c`. Conservare parser/arbitraggio e temporizzazione relè. Web, bootloader, controller RDM e nuove funzioni NFC restano esclusi.
-- Fase corrente autorizzata: integrazione SDCP2 nel solo ADSW100, dopo approvazione della fondazione offline. SNAPSHOT, REQUEST/ACK, CFG, metadati0x28..0x37 e Init Memory con inizializzazione NFC esplicita. Non modificare URC01/DRV_STG4 né DMX/RDM/Art-Net/sACN/relè/hold30s. Driver I2C cooperativo adattato da DRV; catalogo esterno, nessun descrittore nel tag. Rigenerare `Core/Inc/nfc_catalog.h` esclusivamente dal generatore approvato; cataloghi/fingerprint wire congelati. Nessuna libreria crittografica nel firmware.
+- Fase corrente autorizzata: integrazione SDCP2 nel solo ADSW100, dopo approvazione della fondazione offline. SNAPSHOT, REQUEST/ACK, CFG, metadati0x28..0x37 e Init Memory con inizializzazione NFC esplicita. Non modificare URC01/DRV_STG4 né DMX/RDM/Art-Net/sACN/relè/hold30s. Driver I2C cooperativo adattato da DRV; catalogo esterno, nessun descrittore nel tag. Decisione utente17/11/2026: `Core/Inc/nfc_catalog.h` e revisione schema sono manuali; nessun digest, riferimento ROM aggiuntivo o generatore in build. Nessuna libreria crittografica nel firmware.
 
 - Non effettuare commit automaticamente e non modificare i firmware di riferimento.
 - Conservare i commit congelati `1e71467`, `0b5fa6c` e `7cbf16e` (Initial commit v1.4.0): niente riscrittura della storia, cancellazione o sostituzione. Non creare il tag v2.0.0 prima della validazione finale.
@@ -50,8 +50,8 @@ Regole adattate da `/Users/gianlucatini/Dropbox/Firmware_Git/RDM_SPLITTER_H7/AGE
 
 ## NFC SDCP2 e Init Memory
 
-- Specifica wire e catalogo in `protocol/nfc/README.md`; firmware e script host devono passare gli stessi vettori. Non duplicare fingerprint o descrittori manualmente.
-- EEPROM metadata NF/versione1: stato0x2B A5 commesso, B6 richiesta preparata, C3 modifica locale, D7 Init EEPROM preparato, E8 Init tag autorizzato. Revision/request/CRC richiesta BE32 a2C/30/34. Schema e hash restano in flash.
+- Specifica wire e catalogo in `protocol/nfc/README.md`; firmware e script host devono passare gli stessi vettori. Compatibilità esclusivamente Manufacturer ID, Model ID e Schema Revision manuale; nessun fingerprint.
+- EEPROM metadata NF/versione1: stato0x2B A5 commesso, B6 richiesta preparata, C3 modifica locale, D7 Init EEPROM preparato, E8 Init tag autorizzato. Revision/request/CRC richiesta BE32 a2C/30/34. La revisione schema resta in flash, senza hash.
 - Nessun ripristino da JSON al boot. Init Memory utente usa `EE_InitWithNfc`, verifica i default prima di rendere persistente E8; dopo reboot il servizio sostituisce solo NDEF propri riconosciuti o area vuota. Consenso consumato dopo readback tag. Preservare contenuti estranei, UID, indirizzo I2C e lock; CC nuovo solo con consenso Init, probe2k e controlli del riferimento DRV.
 - Nessun autosave/inizializzazione per metadati NF corrotti. Stato preparato dopo reboot: finalizzare solo se richiesta e configurazione completa già coincidono; altrimenti richiedere manutenzione, senza riapplicare la richiesta. Non promettere atomicità della EEPROM legacy in place.
 - NFC cede I2C al pannello durante la configurazione; EEPROM e RTC rispettano la riserva STOP/READ del tag. Driver IT non bloccante; i commit EEPROM conservano le API sincrone preesistenti. Misurare sul dispositivo la latenza e la convivenza con RDM/rete.

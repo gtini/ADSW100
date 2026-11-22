@@ -555,9 +555,9 @@ static bool NfcBuild(uint32_t values[CFG_PARAMETER_COUNT], const ee_nfc_meta_t *
     }
     NfcPut16(d + value_header + 2, used - value_header - 4);
     if (!NfcAppendExtensions(d, &used, 7)) return false;
-    d[used] = 7; d[used + 1] = 1; NfcPut16(d + used + 2, 36);
+    d[used] = 7; d[used + 1] = 1; NfcPut16(d + used + 2, 4);
     NfcPut32(d + used + 4, NFC_SCHEMA_REVISION);
-    memcpy(d + used + 8, nfc_schema_hash, 32); used += 40;
+    used += 8;
     if (!NfcAppendExtensions(d, &used, 0x80)) return false;
     d[used] = 0x80; d[used + 1] = 1; NfcPut16(d + used + 2, 14);
     d[used + 4] = 1; d[used + 5] = 0;
@@ -658,7 +658,7 @@ static bool NfcParse(const uint8_t *memory, unsigned capacity, nfc_document_t *d
         }
         else if (id == 7)
         {
-            if (flags != 1 || size != 36 || NfcU32(p) != NFC_SCHEMA_REVISION || memcmp(p + 4, nfc_schema_hash, 32)) return false;
+            if (flags != 1 || size != 4 || NfcU32(p) != NFC_SCHEMA_REVISION) return false;
             seen |= 4;
         }
         else if (id == 0x80)

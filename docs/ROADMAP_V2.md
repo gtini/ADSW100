@@ -1,3 +1,9 @@
+> Aggiornamento 17 novembre 2026: la roadmap NFC del 15 novembre sotto e'
+> storica. Fingerprint, firme, catalogo binario e generazione durante la build
+> sono rimossi. Codec SDCP2 con revisione manuale e CRC32, client URC01 RAW e
+> catalogo JSON facoltativo incorporato in ST2FW v3 sono implementati e verificati
+> su host/ARM. Resta il collaudo fisico. Vedere [contratto corrente](../protocol/nfc/README.md).
+
 # ADSW100 v2.0.0 — roadmap incrementale
 
 ## Priorità: regressione I2C / salvataggi e riavvio — 16 novembre 2026

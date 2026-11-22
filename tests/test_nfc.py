@@ -112,7 +112,7 @@ int main(int argc,char **argv) {
  mock_hal_ready=true;TestInit2();assert(mock_irq_enabled);
  puts("STARTUP IRQ: IRQ mascherati durante MSP/HAL, abilitati dopo init completo");
  Setup();
- uint8_t fixture[896]={0};unsigned n=Load(argv[1],fixture);assert(n==233);OwnIdentity(fixture);nfc_capacity=816;
+ uint8_t fixture[896]={0};unsigned n=Load(argv[1],fixture);assert(n==201);OwnIdentity(fixture);nfc_capacity=816;
  uint32_t saved[CFG_PARAMETER_COUNT];assert(NfcSaved(saved));ee_nfc_meta_t meta={.revision=1,.state=EE_NFC_COMMITTED};
  assert(NfcBuild(saved,&meta));assert(!memcmp(nfc_image,fixture,n));
  puts("SNAPSHOT: byte-identico al vettore ufficiale SDCP2/NDEF");
@@ -123,7 +123,7 @@ int main(int argc,char **argv) {
  }
  fclose(index);assert(cases==18);puts("CODEC: tutti i vettori ADSW ufficiali positivi/negativi");
  Setup();uint8_t legacy[40];memcpy(legacy,memory,40);Run(12000);
- assert(!strcmp(nfc_status,"SYNCED"));assert(!memcmp(legacy,memory,40));assert(tag_writes==16);
+ assert(!strcmp(nfc_status,"SYNCED"));assert(!memcmp(legacy,memory,40));assert(tag_writes==14);
  nfc_document_t doc;assert(NfcParse(tag+16,888,&doc));assert(doc.kind==0 && doc.revision==1);
  unsigned tw=tag_writes;Run(6000);assert(tag_writes==tw);puts("SERVICE: boot blank, snapshot, verifica tag e scansioni senza riscritture");
  // Configurazioni commerciali e luminosità legacy non normalizzate dal publisher.
@@ -256,7 +256,7 @@ int main(int argc,char **argv) {
  puts("REQUEST: commit/readback, ACK, deduplicazione senza secondo salvataggio");
  // Stesso ID con contenuto diverso: conflitto e nessuna riscrittura.
  uint8_t altered[896];memcpy(altered,fixture,896);NfcPut16(altered+35+34,3);
- NfcPut32(altered+35+193,NfcCrc(altered+35,193));memcpy(nfc_memory,altered,896);
+ NfcPut32(altered+35+161,NfcCrc(altered+35,161));memcpy(nfc_memory,altered,896);
  before=writes;NfcProcess();assert(!strcmp(nfc_status,"DUPLICATE_ID") && writes==before && dmx_address==2);
  // Commit configurazione completato, sigillo metadati ancora REQUEST: solo finalizzazione.
  Setup();Load(argv[3],fixture);OwnIdentity(fixture);nfc_document_t pending;
@@ -272,10 +272,10 @@ int main(int argc,char **argv) {
   rf_field=true;Run(350);assert(!ee_nfc_bus_reserved);
   assert(EE_NfcRead(&meta)==1 && NfcSaved(saved));assert(NfcBuild(saved,&meta));
   uint8_t *d=nfc_image+35;NfcPut16(d+34,cycle&1?2:1);
-  for(unsigned at=6;at<193;at+=4+NfcU16(d+at+2))if(d[at]==128) {
+  for(unsigned at=6;at<161;at+=4+NfcU16(d+at+2))if(d[at]==128) {
    d[at+5]=1;NfcPut32(d+at+10,NfcNext(meta.request));break;
   }
-  NfcPut32(d+193,NfcCrc(d,193));memcpy(tag+16,nfc_image,240);rf_field=false;Run(10000);rf_field=true;Run(350);
+  NfcPut32(d+161,NfcCrc(d,161));memcpy(tag+16,nfc_image,240);rf_field=false;Run(10000);rf_field=true;Run(350);
   assert(EE_NfcRead(&meta)==1 && meta.request==cycle+2 && meta.state==EE_NFC_COMMITTED);
   assert(NfcParse(tag+16,888,&doc) && doc.kind==0 && doc.applied==cycle+2);
  }
@@ -377,7 +377,6 @@ def run():
         spec=importlib.util.spec_from_file_location('sdcp_protocol',ROOT/'protocol/nfc/sdcp.py')
         protocol=importlib.util.module_from_spec(spec);spec.loader.exec_module(protocol)
         model=protocol.compile_model(protocol.load(ROOT/'protocol/nfc/registry.json'),protocol.load(ROOT/'protocol/nfc/catalogs/ADSW100.json'))
-        assert (ROOT/'Core/Inc/nfc_catalog.h').read_bytes()==protocol.firmware_header(model).encode('ascii')
         vectors=json.loads((ROOT/'protocol/nfc/vectors/vectors.json').read_text())['vectors']
         entries=[]
         for v in vectors:

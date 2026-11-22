@@ -1,0 +1,476 @@
+{
+  "format": 1,
+  "manufacturer": 518,
+  "model": 94,
+  "revision": 1,
+  "category": 256,
+  "name": "DRV_STG4",
+  "parameter_count": 19,
+  "parameters": [
+    {
+      "manufacturer": 0,
+      "pid": 224,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 1,
+      "maximum": 5,
+      "default": "05",
+      "choices": [
+        {
+          "value": 1,
+          "label": "RGBWA 11 CH"
+        },
+        {
+          "value": 2,
+          "label": "RGBWA 10 CH"
+        },
+        {
+          "value": 3,
+          "label": "RGBWA 7 CH"
+        },
+        {
+          "value": 4,
+          "label": "RGBWA 6 CH"
+        },
+        {
+          "value": 5,
+          "label": "RGBWA 5 CH"
+        }
+      ],
+      "semantic": "dmx_personality",
+      "binding": "personality",
+      "label": "Personality"
+    },
+    {
+      "manufacturer": 0,
+      "pid": 240,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 1,
+      "maximum": 512,
+      "default": "0001",
+      "choices": [],
+      "semantic": "dmx_address",
+      "binding": "address",
+      "label": "DMX Address"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 33280,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 6,
+      "default": "00",
+      "choices": [
+        {
+          "value": 0,
+          "label": "F1"
+        },
+        {
+          "value": 1,
+          "label": "F2"
+        },
+        {
+          "value": 2,
+          "label": "F3"
+        },
+        {
+          "value": 3,
+          "label": "F4"
+        },
+        {
+          "value": 4,
+          "label": "F5"
+        },
+        {
+          "value": 5,
+          "label": "F6"
+        },
+        {
+          "value": 6,
+          "label": "F7"
+        }
+      ],
+      "semantic": "pwm_frequency",
+      "binding": "pwm",
+      "label": "PWM Frequency"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 33281,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 3,
+      "default": "00",
+      "choices": [
+        {
+          "value": 0,
+          "label": "0"
+        },
+        {
+          "value": 1,
+          "label": "1"
+        },
+        {
+          "value": 2,
+          "label": "2"
+        },
+        {
+          "value": 3,
+          "label": "3"
+        }
+      ],
+      "semantic": "smooth",
+      "binding": "smooth",
+      "label": "Smooth"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 33283,
+      "type": 7,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 1,
+      "default": "00",
+      "choices": [],
+      "semantic": "cym_simulation",
+      "binding": "cym",
+      "label": "CYM Simulation"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57344,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 1,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_enable",
+      "binding": "scene",
+      "label": "Scene Enable"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57345,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_1",
+      "binding": "scene_ch1",
+      "label": "Scene Channel 1"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57346,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_2",
+      "binding": "scene_ch2",
+      "label": "Scene Channel 2"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57347,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_3",
+      "binding": "scene_ch3",
+      "label": "Scene Channel 3"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57348,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_4",
+      "binding": "scene_ch4",
+      "label": "Scene Channel 4"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57349,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_5",
+      "binding": "scene_ch5",
+      "label": "Scene Channel 5"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57350,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_6",
+      "binding": "scene_ch6",
+      "label": "Scene Channel 6"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57351,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 255,
+      "default": "0000",
+      "choices": [],
+      "semantic": "scene_channel_7",
+      "binding": "scene_ch7",
+      "label": "Scene Channel 7"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57600,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 1,
+      "default": "0001",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Legacy"
+        },
+        {
+          "value": 1,
+          "label": "Modern"
+        }
+      ],
+      "semantic": "ramp_algorithm",
+      "binding": "ramp_mode",
+      "label": "Ramp Algorithm"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57601,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 2,
+      "default": "0000",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Legacy"
+        },
+        {
+          "value": 1,
+          "label": "Quadratic"
+        },
+        {
+          "value": 2,
+          "label": "Linear"
+        }
+      ],
+      "semantic": "dimming_curve",
+      "binding": "curve",
+      "label": "Dimming Curve"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57602,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 5,
+      "default": "0004",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Slow"
+        },
+        {
+          "value": 1,
+          "label": "Medium"
+        },
+        {
+          "value": 2,
+          "label": "Fast"
+        },
+        {
+          "value": 3,
+          "label": "Direct"
+        },
+        {
+          "value": 4,
+          "label": "Custom"
+        },
+        {
+          "value": 5,
+          "label": "Dynamic2"
+        }
+      ],
+      "semantic": "ramp_type",
+      "binding": "ramp_type",
+      "label": "Ramp Type"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57603,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 1,
+      "default": "0000",
+      "choices": [
+        {
+          "value": 0,
+          "label": "Auto OFF"
+        },
+        {
+          "value": 1,
+          "label": "Always ON"
+        }
+      ],
+      "semantic": "oled_mode",
+      "binding": "display_mode",
+      "label": "OLED Mode"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57604,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 1,
+      "selectors": [
+        0
+      ],
+      "minimum": 10,
+      "maximum": 3600,
+      "default": "001E",
+      "choices": [],
+      "semantic": "oled_off_time",
+      "binding": "auto_off_seconds",
+      "label": "OLED OFF Time"
+    },
+    {
+      "manufacturer": 518,
+      "pid": 57605,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 2,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 240,
+      "default": "001E",
+      "choices": [],
+      "semantic": "oled_save_time",
+      "binding": "oled_save_minutes",
+      "label": "OLED Save Time"
+    }
+  ]
+}

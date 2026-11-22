@@ -47,7 +47,7 @@ L’utente autorizza 16 byte 0x28..0x37; i percorsi EEPROM esaminati terminano a
 | 30..33 | Ultima richiesta associata | 4 |
 | 34..37 | CRC32 richiesta, non CRC della configurazione | 4 |
 
-Mappa 00..27 e versione struttura3 invariate; niente slot aggiuntivi. Schema/SHA-256 statici restano in flash, non in EEPROM. La sequenza fisica di commit e recupero non è ancora implementata o validata; la memoria in place non diventa atomica grazie ai soli 16 byte.
+Mappa 00..27 e versione struttura3 invariate; niente slot aggiuntivi. Manufacturer ID, Model ID e Schema Revision manuale appartengono al firmware, non alla EEPROM. Non esiste piu un hash di schema. La sequenza fisica di commit e recupero non è ancora implementata o validata; la memoria in place non diventa atomica grazie ai soli 16 byte.
 
 Il modello host [protocol/nfc](../protocol/nfc/README.md) verifica che EEPROM salva BE il numero raw lwIP little-endian: 192.168.1.20 corrisponde ai byte legacy 14 01 A8 C0, mentre NFC trasmette C0 A8 01 14. DHCP attivo conserva IP/mask salvati; DNS usa indici0/1, route canonica SET ID0. Test per tutti i prefissi0..32, rifiuto di mask non contigua e conservazione byte00..02/18..7F. È una prova host, non un nuovo writer hardware né una migrazione eseguita.
 

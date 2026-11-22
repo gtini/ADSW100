@@ -1,3 +1,11 @@
+> Archivio della proposta del 15 novembre 2026, conservato per il censimento e
+> l'analisi hardware. Le proposte di fingerprint, firma, catalogo binario e fallback
+> ROM riportate sotto sono ritirate. Il contratto corrente e' in
+> [protocol/nfc](../protocol/nfc/README.md), [revisione manuale](NFC_REVISIONE_MANUALE.md)
+> e [ST2FW v3](ST2FW_V3_INTEGRAZIONE.md): Manufacturer/Model/Revision, JSON
+> facoltativo, CRC32, nessun hash o firma. Le stime basate sul vecchio schema
+> di 36 byte non descrivono il wire corrente di quattro byte.
+
 # NFC comune — registro PID e catalogo aggiornabile
 
 ## Stato fase 2 — ADSW100 implementato
