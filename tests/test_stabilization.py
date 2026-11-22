@@ -35,7 +35,8 @@ struct pbuf { uint16_t len, tot_len; void *payload; };
 static struct netif interface;
 static struct netif *netif_default = &interface;
 static uint32_t tick;
-static uint32_t HAL_GetTick(void) { return tick; }
+static bool mock_time_progress;
+static uint32_t HAL_GetTick(void) { return mock_time_progress ? tick++ : tick; }
 #define USB_Printf(...) ((void)0)
 #define LWIP_IPV4 1
 #define IPADDR_TYPE_ANY 0
@@ -463,6 +464,7 @@ static char sent[256];
 static unsigned tx_calls;
 static bool mock_nfc_enabled=true;
 void NFC_SetEnabled(bool enabled) {mock_nfc_enabled=enabled;}
+void Startup_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"boot=mock\r\n");}
 void NFC_FormatLiveDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"i2c=mock\r\n");}
 void NFC_FormatBusDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"i2c=mock\r\n");}
 void NFC_FormatDiagnostics(char *out,size_t capacity) {snprintf(out,capacity,"nfc=mock\r\n");}
@@ -486,9 +488,19 @@ int main(void) {
  command("brand?\r\n","brand=0\r\n");command("menu_code?\n","menu_code=0\r\n");
  unsigned diagnostic_writes=writes;
  command("nfc=0\n","OK VOLATILE CHECK i2c?\r\n");assert(!mock_nfc_enabled);
- command("i2c?\n","i2c=mock\r\n");
+ command("i2c?\n","i2c=mock\r\n");command("boot?\n","boot=mock\r\n");
  char ee_diag[256];EE_FormatDiagnostics(ee_diag,sizeof ee_diag);command("ee?\n",ee_diag);
  command("nfc=1\n","OK VOLATILE CHECK i2c?\r\n");assert(mock_nfc_enabled && writes==diagnostic_writes);
+ /* Reader boot: query consumate senza essere interpretate come token/setter. */
+ char boot_line[160];mock_time_progress=true;
+ USB_Debug_OnRxBytes((const uint8_t *)"boot?\n",6);
+ assert(USB_ReadLineTimeout(boot_line,sizeof boot_line,50)==0 && !strcmp(sent,"boot=mock\r\n"));
+ cdc.TxState=0;
+ USB_Debug_OnRxBytes((const uint8_t *)"FGM001122334455\n",16);
+ assert(USB_ReadLineTimeout(boot_line,sizeof boot_line,50)==15 && !strcmp(boot_line,"FGM001122334455"));
+ USB_Debug_OnRxBytes((const uint8_t *)"nfc=0\n",6);
+ assert(USB_ReadLineTimeout(boot_line,sizeof boot_line,50)==5 && mock_nfc_enabled);
+ assert(writes==diagnostic_writes);mock_time_progress=false;
 
  command("brand=1\n","OK REBOOT\r\n");assert(brand==BRAND_AXN && menu_code_required==0);
  command("brand?\n","brand=1\r\n");command("menu_code?\n","menu_code=1\r\n");
@@ -938,6 +950,98 @@ int main(void) {
 }
 """
 
+def run_boot_tests(tmp):
+    """Esegue il controllo reale di main.c: I/O fallito, magic e token MAC.
+    longjmp ferma solo le attese infinite del firmware nel processo host.
+    """
+    common = COMMON.replace('typedef struct {unsigned dummy;} I2C_HandleTypeDef;',
+                            'typedef struct {unsigned ISR,CR1;} BootI2CRegs; '
+                            'typedef struct {unsigned ErrorCode,State,Lock; BootI2CRegs *Instance;} I2C_HandleTypeDef;')
+    common = common.replace('static bool fail_read,fail_write;',
+                            'static bool fail_read,fail_write; static HAL_StatusTypeDef boot_read_failure;')
+    common = common.replace('if(fail_read || io_fail())return HAL_ERROR;',
+                            'if(boot_read_failure)return boot_read_failure; if(fail_read || io_fail())return HAL_ERROR;')
+    (tmp/'h_files.h').write_text(common)
+    source = (ROOT/'Core/Src/main.c').read_text()
+    diagnostic = source[source.index('/* Diagnostica boot:'):source.index('void hardware_check(void)')]
+    unlock = source[source.index('/* ========== Unlock nuovo dispositivo'):source.index('void HAL_TIM_PeriodElapsedCallback')]
+    mocks = r'''
+#include <setjmp.h>
+static jmp_buf boot_exit;
+static unsigned factory_calls,boot_reads,wd_refreshes;
+static int input_mode;
+static char screen[40];
+static struct {unsigned RSR;} boot_rcc={.RSR=0x10000000};
+static struct {unsigned VTOR;} boot_scb={.VTOR=0x08000000};
+static struct {unsigned IDR;} boot_gpio={.IDR=192};
+#define RCC (&boot_rcc)
+#define SCB (&boot_scb)
+#define GPIOB (&boot_gpio)
+static unsigned __get_MSP(void) {return 0x2407FF00;}
+static unsigned __get_BASEPRI(void) {return 0;}
+static unsigned __get_CONTROL(void) {return 0;}
+static unsigned __get_IPSR(void) {return 0;}
+static unsigned HAL_I2C_GetState(I2C_HandleTypeDef *h) {return h->State;}
+static int hiwdg1;
+static void HAL_IWDG_Refresh(int *h) {(void)h;wd_refreshes++;}
+static void LCD_Clear(void) {screen[0]=0;}
+static void LCD_DrawText(const char *s,int a,int b,int c,int d,int e) {
+ (void)a;(void)b;(void)c;(void)d;(void)e;snprintf(screen,sizeof screen,"%s",s);
+}
+static void HardFactoryReset(bool preserve) {assert(!preserve);factory_calls++;longjmp(boot_exit,2);}
+int USB_ReadLineTimeout(char *out,size_t capacity,uint32_t timeout) {
+ tick+=timeout;boot_reads++;
+ if(input_mode==1 && boot_reads==1) {snprintf(out,capacity,"FGMFC0FE7164570");return strlen(out);}
+ if(input_mode==2 && boot_reads==1) {snprintf(out,capacity,"FGMFC0FE7164571");return strlen(out);}
+ if(input_mode==3 && boot_reads<=600) return 0;
+ longjmp(boot_exit,1);
+}
+'''
+    body = r'''
+int main(void) {
+ BootI2CRegs regs={.ISR=0x8000,.CR1=1};hi2c1.Instance=&regs;
+ memset(memory,255,sizeof memory);assert(EE_InitMemory()==HAL_OK && EE_LoadConfig()==HAL_OK);
+ const uint8_t eui[]={0xFC,0x0F,0xE7,0x16,0x45,0x70};memcpy(memory+0xFA,eui,6);
+ uint8_t preserved[128];memcpy(preserved,memory,128);unsigned before=writes;
+ Startup_RecordEntry();assert(startup_diag.reset==0x10000000 && startup_diag.vtor==0x08000000);
+ assert(Startup_SimpleUnlock()==1 && startup_diag.stage==3 && factory_calls==0 && boot_reads==0);
+ assert(writes==before && !memcmp(memory,preserved,128));
+ for(int status=1;status<=3;status++) {
+  boot_read_failure=status;screen[0]=0;boot_reads=0;input_mode=1;
+  if(setjmp(boot_exit)==0) {Startup_SimpleUnlock();assert(0);}
+  assert(!strcmp(screen,"EEPROM read error") && startup_diag.stage==5);
+  assert(startup_diag.magic_status==status && factory_calls==0);
+  char diag[320];Startup_FormatDiagnostics(diag,sizeof diag);
+  assert(strstr(diag,"magic=----") && strstr(diag,"ISR=00008000") && strstr(diag,"lines=3\r\n"));
+  assert(writes==before && !memcmp(memory,preserved,128));
+ }
+ boot_read_failure=HAL_OK;memory[0]=memory[1]=0;memcpy(preserved,memory,128);
+ boot_reads=0;input_mode=2;
+ if(setjmp(boot_exit)==0) {Startup_SimpleUnlock();assert(0);}
+ assert(!strcmp(screen,"Wait for boot") && startup_diag.stage==4 && factory_calls==0);
+ boot_reads=0;input_mode=3;tick=0;
+ if(setjmp(boot_exit)==0) {Startup_SimpleUnlock();assert(0);}
+ assert(startup_diag.stage==6 && wd_refreshes>=600 && factory_calls==0);
+ assert(writes==before && !memcmp(memory,preserved,128));
+ boot_reads=0;input_mode=1;tick=0;
+ int exit_code=setjmp(boot_exit);if(!exit_code) {Startup_SimpleUnlock();assert(0);}
+ assert(exit_code==2 && factory_calls==1); /* Solo token FGM+MAC esatto, come prima. */
+ assert(writes==before && !memcmp(memory,preserved,128));
+ puts("BOOT_TEST: magic valido, tre errori HAL senza provisioning, token MAC/timeout invariati, EEPROM intatta");
+ return 0;
+}
+'''
+    harness = '#include "h_files.h"\n'+mocks
+    harness += f'#include "{ROOT / "Core/Src/cfg_io.c"}"\n#include "{ROOT / "Core/Src/eeprom.c"}"\n'
+    (tmp/'test-boot.c').write_text(harness+diagnostic+unlock+body)
+    for optimization in ('-O0','-Os'):
+        exe=tmp/'test-boot'
+        subprocess.run([os.environ.get('CC','cc'),'-std=c11',optimization,'-fsanitize=address,undefined',
+                        '-fno-sanitize-recover=all','-Werror=implicit-function-declaration',
+                        '-I'+str(tmp),'-I'+str(ROOT/'Core/Inc'),str(tmp/'test-boot.c'),'-o',str(exe)],check=True)
+        subprocess.run([str(exe)],check=True)
+
+
 def run():
     with tempfile.TemporaryDirectory(prefix='adsw100-tests-') as folder:
         tmp = Path(folder)
@@ -973,8 +1077,9 @@ def run():
                             '-I'+str(tmp), '-I'+str(ROOT/'Core/Inc'), str(harness), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
             print(define + ': PASS')
+        run_boot_tests(tmp)
 
-def arm_build(output, defines=()):
+def arm_build(output, defines=(), configuration="Debug"):
     """Build C/ASM completa con GCC ARM di CubeIDE, senza cambiare il progetto.
     Usa gli include Debug da .cproject e il linker ADSW100; non esegue flash.
     """
@@ -984,13 +1089,19 @@ def arm_build(output, defines=()):
     cc = os.environ.get('ARM_CC') or (str(candidates[0]) if candidates else None)
     if not cc:
         raise SystemExit('Impostare ARM_CC con il percorso arm-none-eabi-gcc')
-    project = (ROOT/'.cproject').read_text().split('<sourceEntries>')[0]
-    includes = list(dict.fromkeys(re.findall(r'value="(\.\./[^"\n]+)"', project)))
+    import xml.etree.ElementTree as ET
+    cfg = next(c for c in ET.parse(ROOT/'.cproject').iter('configuration') if c.get('name') == configuration)
+    compiler = next(t for t in cfg.iter('tool') if t.get('superClass','').endswith('tool.c.compiler'))
+    includes = list(dict.fromkeys(v.get('value') for o in compiler.findall('option')
+                                 if o.get('valueType') == 'includePath' for v in o.findall('listOptionValue')))
+    symbols = [v.get('value') for o in compiler.findall('option') if o.get('valueType') == 'definedSymbols'
+               for v in o.findall('listOptionValue')]
+    optimization = '-Os' if configuration == 'Release' else '-O0'
     flags = ['-mcpu=cortex-m7', '-mthumb', '-mfpu=fpv5-d16', '-mfloat-abi=hard',
-             '-std=gnu11', '-O0', '-g3', '-ffunction-sections', '-fdata-sections', '-Wall',
-             '-DDEBUG', '-DUSE_HAL_DRIVER', '-DSTM32H743xx', '-DUSE_PWR_LDO_SUPPLY']
-    flags += list(defines)
+             '-std=gnu11', optimization, '-g3', '-ffunction-sections', '-fdata-sections', '-Wall']
+    flags += ['-D'+symbol for symbol in symbols] + list(defines)
     flags += ['-I'+str(ROOT/p[3:]) for p in includes]
+    (output/'build-flags.txt').write_text(configuration+'\n'+'\n'.join(flags)+'\n')
     sources = []
     for folder in ['Core', 'LWIP', 'USB_DEVICE', 'Middlewares', 'Drivers/STM32H7xx_HAL_Driver/Src']:
         sources += [p for p in (ROOT/folder).rglob('*.c') if 'template' not in p.name]
@@ -1014,12 +1125,26 @@ def arm_build(output, defines=()):
     (output/'link.log').write_text(result.stdout+result.stderr)
     if result.returncode:
         raise SystemExit('Link fallito: vedere '+str(output/'link.log'))
-    print(f'ARM BUILD: PASS ({len(sources)} unità, ELF/map/log in {output})')
+    # Controllo sul vettore realmente linkato, non solo sul testo del linker.
+    import struct
+    prefix = cc[:-3]
+    subprocess.run([prefix+'objcopy','-O','binary','--only-section=.isr_vector',
+                    str(output/'ADSW100.elf'),str(output/'vectors.bin')],check=True)
+    initial_sp, reset = struct.unpack_from('<II',(output/'vectors.bin').read_bytes())
+    assert initial_sp == 0x2407FFE0 and initial_sp % 8 == 0
+    assert initial_sp < 0x24080000-16 and reset & 1
+    symbols = subprocess.check_output([prefix+'nm',str(output/'ADSW100.elf')],text=True)
+    named = {name:int(address,16) for address,kind,name in
+             re.findall(r'^([0-9a-fA-F]+)\s+(\w)\s+(\S+)$',symbols,re.M)}
+    assert initial_sp == named['_estack'] and reset == named['Reset_Handler'] | 1
+    assert named['_end'] + named['_Min_Heap_Size'] + named['_Min_Stack_Size'] <= initial_sp
+    (output/'vector-check.txt').write_text(f'MSP={initial_sp:08X} Reset_Handler={reset:08X}\nAN2606 ROM9.1: PASS\n')
+    print(f'ARM {configuration}: PASS ({len(sources)} unità, ELF/map/log in {output})')
 
 
 if __name__ == '__main__':
-    if len(sys.argv) >= 3 and sys.argv[1] == '--arm-build':
+    if len(sys.argv) >= 3 and sys.argv[1] in ('--arm-build', '--arm-release'):
         assert all(flag.startswith('-D') for flag in sys.argv[3:])
-        arm_build(sys.argv[2], sys.argv[3:])
+        arm_build(sys.argv[2], sys.argv[3:], "Release" if sys.argv[1] == "--arm-release" else "Debug")
     else:
         run()

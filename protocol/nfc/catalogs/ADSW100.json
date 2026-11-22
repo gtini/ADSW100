@@ -1,22 +1,116 @@
 {
-  "kind": "catalog",
   "format": 1,
-  "manufacturer": "17FA",
-  "model": "0060",
-  "schema_revision": 1,
+  "manufacturer": 6138,
+  "model": 96,
+  "revision": 1,
+  "category": 1537,
   "name": "ADSW100",
+  "parameter_count": 14,
   "parameters": [
     {
-      "key": "mfr:17FA:9100",
-      "label": "Port Mode",
-      "minimum": 0,
-      "maximum": 2,
-      "default": "00",
+      "manufacturer": 0,
+      "pid": 240,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
-      "binding": "cfg_dmx_port_mode",
+      "minimum": 1,
+      "maximum": 512,
+      "default": "0001",
+      "choices": [],
+      "semantic": "dmx_address",
+      "binding": "cfg_dmx_address",
+      "label": "DMX Address"
+    },
+    {
+      "manufacturer": 0,
+      "pid": 1795,
+      "type": 7,
+      "selector": 2,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        1
+      ],
+      "minimum": 0,
+      "maximum": 1,
+      "default": "01",
+      "choices": [],
+      "semantic": "ipv4_dhcp_mode",
+      "binding": "cfg_use_dhcp",
+      "label": "DHCP Mode"
+    },
+    {
+      "manufacturer": 0,
+      "pid": 1798,
+      "type": 10,
+      "selector": 2,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        1
+      ],
+      "minimum": 0,
+      "maximum": 32,
+      "default": "0000000000",
+      "choices": [],
+      "semantic": "ipv4_static_address",
+      "binding": "cfg_stored_ip_mask",
+      "label": "Static IPv4 / Prefix"
+    },
+    {
+      "manufacturer": 0,
+      "pid": 1802,
+      "type": 11,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 0,
+      "default": "0000000000000000",
+      "choices": [],
+      "semantic": "ipv4_default_route",
+      "binding": "cfg_gateway",
+      "label": "Default Route"
+    },
+    {
+      "manufacturer": 0,
+      "pid": 1803,
+      "type": 9,
+      "selector": 1,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0,
+        1
+      ],
+      "minimum": 0,
+      "maximum": 0,
+      "default": "00000000",
+      "choices": [],
+      "semantic": "dns_ipv4_server",
+      "binding": "cfg_dns",
+      "label": "DNS Server"
+    },
+    {
+      "manufacturer": 6138,
+      "pid": 37120,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
+      "minimum": 0,
+      "maximum": 2,
+      "default": "00",
       "choices": [
         {
           "value": 0,
@@ -30,19 +124,24 @@
           "value": 2,
           "label": "sACN Node"
         }
-      ]
+      ],
+      "semantic": "port_mode",
+      "binding": "cfg_dmx_port_mode",
+      "label": "Port Mode"
     },
     {
-      "key": "mfr:17FA:9101",
-      "label": "Source Mode",
-      "minimum": 0,
-      "maximum": 3,
-      "default": "02",
+      "manufacturer": 6138,
+      "pid": 37121,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
-      "binding": "cfg_source_mode",
+      "minimum": 0,
+      "maximum": 3,
+      "default": "02",
       "choices": [
         {
           "value": 0,
@@ -60,45 +159,60 @@
           "value": 3,
           "label": "Auto"
         }
-      ]
+      ],
+      "semantic": "source_mode",
+      "binding": "cfg_source_mode",
+      "label": "Source Mode"
     },
     {
-      "key": "mfr:17FA:9102",
-      "label": "Art-Net Universe",
+      "manufacturer": 6138,
+      "pid": 37122,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
       "minimum": 0,
       "maximum": 32767,
       "default": "0000",
+      "choices": [],
+      "semantic": "art_net_universe",
+      "binding": "cfg_artnet_universe",
+      "label": "Art-Net Universe"
+    },
+    {
+      "manufacturer": 6138,
+      "pid": 37123,
+      "type": 2,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
-      "binding": "cfg_artnet_universe",
-      "choices": []
-    },
-    {
-      "key": "mfr:17FA:9103",
-      "label": "sACN Universe",
       "minimum": 1,
       "maximum": 63999,
       "default": "0001",
+      "choices": [],
+      "semantic": "sacn_universe",
+      "binding": "cfg_sacn_universe",
+      "label": "sACN Universe"
+    },
+    {
+      "manufacturer": 6138,
+      "pid": 37124,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
-      "binding": "cfg_sacn_universe",
-      "choices": []
-    },
-    {
-      "key": "mfr:17FA:9104",
-      "label": "sACN Transport",
       "minimum": 0,
       "maximum": 1,
       "default": "00",
-      "selectors": [
-        0
-      ],
-      "access": "rw",
-      "binding": "cfg_sacn_transport",
       "choices": [
         {
           "value": 0,
@@ -108,32 +222,42 @@
           "value": 1,
           "label": "Unicast"
         }
-      ]
+      ],
+      "semantic": "sacn_transport",
+      "binding": "cfg_sacn_transport",
+      "label": "sACN Transport"
     },
     {
-      "key": "mfr:17FA:9105",
-      "label": "sACN Priority",
+      "manufacturer": 6138,
+      "pid": 37125,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
+      "selectors": [
+        0
+      ],
       "minimum": 0,
       "maximum": 200,
       "default": "00",
+      "choices": [],
+      "semantic": "sacn_priority",
+      "binding": "cfg_sacn_priority",
+      "label": "sACN Priority"
+    },
+    {
+      "manufacturer": 6138,
+      "pid": 37126,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
-      "binding": "cfg_sacn_priority",
-      "choices": []
-    },
-    {
-      "key": "mfr:17FA:9106",
-      "label": "Auto Order",
       "minimum": 0,
       "maximum": 5,
       "default": "00",
-      "selectors": [
-        0
-      ],
-      "access": "rw",
-      "binding": "cfg_auto_priority",
       "choices": [
         {
           "value": 0,
@@ -159,100 +283,46 @@
           "value": 5,
           "label": "ArtNet sACN DMX"
         }
-      ]
+      ],
+      "semantic": "auto_order",
+      "binding": "cfg_auto_priority",
+      "label": "Auto Order"
     },
     {
-      "key": "mfr:17FA:9107",
-      "label": "Display Auto OFF",
-      "minimum": 0,
-      "maximum": 1,
-      "default": "01",
+      "manufacturer": 6138,
+      "pid": 37127,
+      "type": 7,
+      "selector": 0,
+      "access": 1,
+      "unit": 0,
       "selectors": [
         0
       ],
-      "access": "rw",
+      "minimum": 0,
+      "maximum": 1,
+      "default": "01",
+      "choices": [],
+      "semantic": "display_auto_off",
       "binding": "cfg_display_auto_off",
-      "choices": []
+      "label": "Display Auto OFF (backlight)"
     },
     {
-      "key": "mfr:17FA:9108",
-      "label": "Relay OFF Time",
+      "manufacturer": 6138,
+      "pid": 37128,
+      "type": 1,
+      "selector": 0,
+      "access": 1,
+      "unit": 1,
+      "selectors": [
+        0
+      ],
       "minimum": 0,
       "maximum": 30,
       "default": "1E",
-      "selectors": [
-        0
-      ],
-      "access": "rw",
+      "choices": [],
+      "semantic": "relay_off_time",
       "binding": "cfg_off_time",
-      "choices": []
-    },
-    {
-      "key": "std:00F0",
-      "label": "DMX Address",
-      "minimum": 1,
-      "maximum": 512,
-      "default": "0001",
-      "selectors": [
-        0
-      ],
-      "access": "rw",
-      "binding": "cfg_dmx_address",
-      "choices": []
-    },
-    {
-      "key": "std:0703",
-      "label": "DHCP Mode",
-      "minimum": 0,
-      "maximum": 1,
-      "default": "01",
-      "selectors": [
-        1
-      ],
-      "access": "rw",
-      "binding": "cfg_use_dhcp",
-      "choices": []
-    },
-    {
-      "key": "std:0706",
-      "label": "Static IPv4 Prefix",
-      "minimum": 0,
-      "maximum": 32,
-      "default": "0000000000",
-      "selectors": [
-        1
-      ],
-      "access": "rw",
-      "binding": "cfg_stored_ip_mask",
-      "choices": []
-    },
-    {
-      "key": "std:070A",
-      "label": "Default Route",
-      "minimum": 0,
-      "maximum": 0,
-      "default": "0000000000000000",
-      "selectors": [
-        0
-      ],
-      "access": "rw",
-      "binding": "cfg_gateway",
-      "choices": []
-    },
-    {
-      "key": "std:070B",
-      "label": "DNS Server",
-      "minimum": 0,
-      "maximum": 0,
-      "default": "00000000",
-      "selectors": [
-        0,
-        1
-      ],
-      "access": "rw",
-      "binding": "cfg_dns",
-      "choices": []
+      "label": "Relay OFF Time"
     }
-  ],
-  "category": "0601"
+  ]
 }

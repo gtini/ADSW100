@@ -1,60 +1,41 @@
-# Studio Due NFC — SDCP 2.0 sperimentale, revisione manuale
+# ADSW100 SDCP2
 
-Contratto aggiornato il17novembre2026: nessun hash/fingerprint di schema, firma,
-manifest o chiave. Nessuna compatibilità con i formati sperimentali precedenti.
+Il catalogo [ADSW100.json](catalogs/ADSW100.json) è la sorgente manuale
+per URC01 e per il futuro pacchetto ST2FW v3. La chiave di compatibilità è
+Manufacturer `17FA`, Model `0060`, Schema Revision `1`. Il formato sperimentale
+precedente è riconoscibile per la migrazione esplicita, ma è respinto come richiesta.
+La revisione resta 1 perché il contratto corrente delle 15 istanze è quello già
+assegnato ad ADSW100 dal client URC01.
 
-Compatibilità catalogo: Manufacturer ID + Model ID + Schema Revision uint32 nonzero.
-L'autore incrementa manualmente la revisione per modifiche incompatibili ai PID,
-selettori, tipi o significato/contratto dei valori. Etichette/descrizioni o un
-nuovo firmware senza variazioni NFC mantengono la revisione.
+La modifica di PID, selettori, tipo, valori ammessi, accesso o semantica che
+rompe la compatibilità richiede un incremento manuale della revisione, nel JSON
+e in `Core/Inc/nfc_catalog.h`. Etichette e versione firmware sono indipendenti.
+Conservare l'ordine dei campi del JSON di esempio. Il parser URC01 legge in
+streaming e una riserializzazione con chiavi ordinate alfabeticamente fallisce.
+L'unità JSON 1 indica secondi. Il prefisso IPv4 è parte del valore di 0706.
 
-## Wire
+| Sezione | Contenuto, interi big endian |
+| --- | --- |
+| 01, critica | 16 byte. Manufacturer, Model, Category, Software ID e UID RDM |
+| 02, critica | PID u16, lunghezza selettore u8, selettore, lunghezza valore u8, valore |
+| 07, critica | Revisione schema u32, esattamente 4 byte |
+| 80, critica | SYNC1, 14 byte. Versione 1, tipo 0 snapshot/ACK o 1 request, revisione configurazione u32, request u32, applied u32 |
 
-Big endian. Header6byte: `53 44 20 00 total_length:u16`; CRC32 finale4byte.
-Lunghezza10..4096, massimo16sezioni ordinate/uniche. Sezione:
-`id:u8 flags:u8 length:u16 data[]`. Flag1=CRITICAL, altri bit vietati.
-Le quattro sezioni seguenti sono obbligatorie e critiche:
+Ogni sezione ha ID u8, flag u8 e lunghezza u16. ID e chiavi VALUES sono
+ordinati e univoci. Il documento inizia con `53 44 20 00` e lunghezza u16
+incluso CRC32 ISO-HDLC finale big endian. NDEF usa un unico record MIME
+`application/vnd.studiodue.sdcp` entro TLV 03 con terminatore FE. Il
+documento base è 165 byte SDCP e 201 byte NDEF/TLV (208 allineati I²C).
+Le sezioni sconosciute non critiche sono ricopiate nell'ACK quando entrano
+nell'area scrivibile. Le REQUEST riportano l'intera VALUES, con sostituzione
+dei soli valori scelti dal client.
 
-| ID | Corpo |
-|---|---|
-| 01 | manufacturer:u16 model:u16 category:u16 software:u32 UID_RDM:6 —16byte |
-| 02 | VALUES: pid:u16 selector_length:u8 selector[] value_length:u8 value[] |
-| 07 | schema_revision:u32 —esattamente4byte |
-| 80 | SYNC1: version:u8=1 kind:u8 revision:u32 request_id:u32 applied_id:u32 —14byte |
+`python3 -B tests/test_nfc.py` esegue il firmware reale con HAL simulato,
+compresi i vettori copiati dal checkout URC01 e un caso sperimentale respinto.
+Passando il percorso del checkout URC01 come argomento, lo stesso test compila
+anche il decoder, il generatore REQUEST e il parser streaming URC01 e verifica
+l'ACK prodotto da ADSW100. Questi strumenti sono facoltativi per il collaudo host.
+CubeIDE compila direttamente la tabella wire C.
 
-VALUES:1..64istanze ordinate per PID e selettore lessicografico, nessun duplicato.
-Selettore0/1/4byte, valore0..64byte. PID standard0001..7FFF; proprietari8000..FFDF
-nel namespace Manufacturer dell'identità. Nessun PIDzero o FFE0..FFFF.
-UID con stesso Manufacturer, Device ID non broadcast. Software ID non seleziona
-il catalogo. La vecchia sezione07da36byte è rifiutata, non migrata.
-
-SNAPSHOT kind0:request=applied. REQUEST kind1:request=next(applied), wrapFFFFFFFF→1.
-Revisione transazione nonzero, base esatta. CRC non è un numero di transazione.
-Target: verificare identità, revisione schema corrente, base/replay, valori e
-permessi prima di salvare; pubblicare ACK soltanto dopo commit verificato.
-Una REQUEST di schema diverso non si applica. Non convertirla automaticamente.
-Sezioni ignote critiche rifiutate; noncritiche preservate dal client nelle REQUEST.
-RAW può modificare solo i byte dei valori, con consenso, senza cambiarne lunghezze,
-chiavi o struttura. Un catalogo assente non disabilita automaticamente RAW.
-
-NDEF Type2 standard: un solo MIME `application/vnd.studiodue.sdcp`, TNF2,
-MB=ME=1, CF=IL=0. SR e nonSR ammessi. TLV03 corto/lungo, FE, poi padding zero
-entro la capacità CC effettiva. Mai cambiare CC/lock per far entrare un messaggio.
-CRC-32/ISO-HDLC riflesso EDB88320, init/xoroutFFFFFFFF, MSB-first sul wire NFC;
-check123456789=CBF43926. Non riutilizzare checksum RDM.
-
-## Sorgenti e strumenti
-
-`sdcp.py` e `test_sdcp.py` sono codec/validatori host facoltativi, non un passaggio
-di compilazione. `registry.json` e gli overlay `catalogs/` sono fixture della
-fondazione importata da ADSW100. I JSON autonomi in `json/` sono modificabili
-manualmente e possono essere selezionati nel Builder ST2FW. Nessun registro
-parallelo firmware generato. Il dispositivo valida i valori tramite le proprie API.
-
-`python3 -B protocol/nfc/test_sdcp.py` verifica wire, CRC, NDEF, namespace,
-revisione manuale e transazioni. `vectors/vectors.json` contiene i vettori aggiornati,
-non dispositivi reali. SDCP1/profili e ST2 legacy non definiscono questo contratto.
-
-Distribuzione ordinaria: JSON incorporato nel pacchetto ST2FW v3. Vedere
-`../../docs/ST2FW_V3_INTEGRAZIONE.md`. Nessun .sdcat o JSON separato richiesto
-sulla microSD. I decoder non interpretano JSON come codice firmware.
+Per i PID, la procedura operativa e il limite di distribuzione del JSON si veda
+[il collaudo NFC](../../docs/NFC_PROTOCOL.md).

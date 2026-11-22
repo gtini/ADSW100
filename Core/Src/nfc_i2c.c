@@ -1,5 +1,5 @@
 /* SDCP2 ADSW100. Driver STOP/READ e rilascio lock adattati da DRV_STG4
-   0578567:i2c_bus.c. PID/schema generati dalla fondazione approvata. */
+   0578567:i2c_bus.c. PID e revisione corrispondenti al catalogo JSON verificato su host. */
 #include "h_files.h"
 #include "nfc_catalog.h"
 #include <string.h>
@@ -340,7 +340,9 @@ void NFC_I2C_ErrorIRQ(void)
 
 #define NFC_USER_BYTES 888u
 #define NFC_SCAN_BYTES 896u
-#define NFC_IMAGE_BYTES 240u
+#define NFC_WRITE_BYTES 880u
+#define NFC_SNAPSHOT_BYTES 165u
+#define NFC_IMAGE_BYTES 208u  /* NDEF base 201 byte, arrotondato al blocco I2C */
 /* Il tag può contenere uno SDCP più lungo per sezioni opzionali opache. */
 static uint8_t nfc_memory[NFC_SCAN_BYTES], nfc_previous[NFC_SCAN_BYTES];
 static uint8_t nfc_image[NFC_SCAN_BYTES], nfc_identity[16];
@@ -354,10 +356,15 @@ static unsigned nfc_extension_length, nfc_extension_cursor;
 static uint8_t nfc_blocks;
 static uint32_t nfc_reads, nfc_applied, nfc_replays, nfc_errors;
 static const char *nfc_status = "NOT_STARTED";
+/* Esito dell'ultima scansione stabile, senza esporre i dati del tag via CDC. */
+static const char *nfc_content = "UNSCANNED";
+static const char *nfc_content_detail = "-";
 static uint32_t nfc_at, nfc_io_at;
 static uint16_t nfc_capacity, nfc_length;
 static uint8_t nfc_block, nfc_verify_block;
-static bool nfc_pending, nfc_second, nfc_identity_ok, nfc_writing;
+static bool nfc_pending, nfc_second, nfc_identity_ok, nfc_writing, nfc_resuming;
+static uint8_t nfc_resume_block, nfc_resume_header[16];
+static uint16_t nfc_resume_capacity;
 static ee_nfc_meta_t nfc_meta;
 
 typedef enum
@@ -409,22 +416,22 @@ static bool NfcSaved(uint32_t values[CFG_PARAMETER_COUNT])
 {
     uint8_t b[40];
     if (EE_ReadConfigSnapshot(b) != HAL_OK) return false;
-    values[CFG_DMX_ADDRESS] = NfcU16(b + 24);
-    values[CFG_DMX_PORT_MODE] = b[39] & 3u;
-    values[CFG_SOURCE_MODE] = b[26];
-    values[CFG_ARTNET_UNIVERSE] = NfcU16(b + 28);
-    values[CFG_SACN_UNIVERSE] = NfcU16(b + 30);
-    values[CFG_SACN_TRANSPORT] = b[32];
-    values[CFG_SACN_PRIORITY] = b[33];
-    values[CFG_DISPLAY_AUTO_OFF] = b[34] == 0;
-    values[CFG_OFF_TIME] = b[35];
-    values[CFG_AUTO_PRIORITY] = b[36];
-    values[CFG_USE_DHCP] = b[3];
-    values[CFG_IP] = NfcU32(b + 4);
-    values[CFG_MASK] = NfcU32(b + 8);
-    values[CFG_GATEWAY] = NfcU32(b + 12);
-    values[CFG_DNS1] = NfcU32(b + 16);
-    values[CFG_DNS2] = NfcU32(b + 20);
+    values[CFG_DMX_ADDRESS] = NfcU16(b + EE_OFFS_DMX_ADDR);
+    values[CFG_DMX_PORT_MODE] = b[EE_OFFS_DMX_PORT_MODE] & 3u;
+    values[CFG_SOURCE_MODE] = b[EE_OFFS_DMX_MODE];
+    values[CFG_ARTNET_UNIVERSE] = NfcU16(b + EE_OFFS_ARTNET_UNI);
+    values[CFG_SACN_UNIVERSE] = NfcU16(b + EE_OFFS_SACN_UNI);
+    values[CFG_SACN_TRANSPORT] = b[EE_OFFS_SACN_TRANSPORT];
+    values[CFG_SACN_PRIORITY] = b[EE_OFFS_SACN_MIN_PRIO];
+    values[CFG_DISPLAY_AUTO_OFF] = b[EE_OFFS_LCD_BACKLIGHT] == 0;
+    values[CFG_OFF_TIME] = b[EE_OFFS_OFF_TIMEOUT_S];
+    values[CFG_AUTO_PRIORITY] = b[EE_OFFS_PROTO_PRIORITY];
+    values[CFG_USE_DHCP] = b[EE_OFFS_USE_DHCP];
+    values[CFG_IP] = NfcU32(b + EE_OFFS_IP);
+    values[CFG_MASK] = NfcU32(b + EE_OFFS_NETMASK);
+    values[CFG_GATEWAY] = NfcU32(b + EE_OFFS_GATEWAY);
+    values[CFG_DNS1] = NfcU32(b + EE_OFFS_DNS1);
+    values[CFG_DNS2] = NfcU32(b + EE_OFFS_DNS2);
     for (unsigned i = 0; i < CFG_PARAMETER_COUNT; ++i)
     {
         if (!CFG_ValidateValue((cfg_parameter_t)i, values[i])) return false;
@@ -516,7 +523,7 @@ static bool NfcAppendExtensions(uint8_t *d, unsigned *used, unsigned before)
     while (nfc_extension_cursor < nfc_extension_length && nfc_extensions[nfc_extension_cursor] < before)
     {
         unsigned size = 4u + NfcU16(nfc_extensions + nfc_extension_cursor + 2);
-        if (*used + size > 816u) return false;
+        if (*used + size > NFC_WRITE_BYTES - 40u) return false;
         memcpy(d + *used, nfc_extensions + nfc_extension_cursor, size);
         *used += size;
         nfc_extension_cursor += size;
@@ -524,12 +531,12 @@ static bool NfcAppendExtensions(uint8_t *d, unsigned *used, unsigned before)
     return true;
 }
 
-/* SDCP snapshot base 197 byte; NDEF SR233, padding a240 solo I2C.
+/* SDCP snapshot base 165 byte; NDEF SR201, padding a208 solo I2C.
    Le sezioni opache possono richiedere NDEF/TLV lunghi.
    I dati provengono dallo snapshot EEPROM verificato, mai da editing RAM. */
 static bool NfcBuild(uint32_t values[CFG_PARAMETER_COUNT], const ee_nfc_meta_t *meta)
 {
-    if (nfc_extension_length > 816u - 197u) return false;
+    if (nfc_extension_length > NFC_WRITE_BYTES - 40u - 1u - NFC_SNAPSHOT_BYTES) return false;
     memset(nfc_image, 0, sizeof nfc_image);
     uint8_t *d = nfc_image + 40;
     nfc_extension_cursor = 0;
@@ -564,7 +571,7 @@ static bool NfcBuild(uint32_t values[CFG_PARAMETER_COUNT], const ee_nfc_meta_t *
     NfcPut32(d + used + 6, meta->revision);
     NfcPut32(d + used + 10, meta->request);
     NfcPut32(d + used + 14, meta->request); used += 18;
-    if (!NfcAppendExtensions(d, &used, 256) || used + 4u > 816u) return false;
+    if (!NfcAppendExtensions(d, &used, 256) || used + 4u > NFC_WRITE_BYTES - 40u - 1u) return false;
     NfcPut16(d + 4, used + 4);
     NfcPut32(d + used, NfcCrc(d, used)); used += 4;
     unsigned header = used <= 255u ? 3u : 6u;
@@ -573,8 +580,19 @@ static bool NfcBuild(uint32_t values[CFG_PARAMETER_COUNT], const ee_nfc_meta_t *
     unsigned prefix = tlv + header + 30u;
     nfc_length = prefix + used + 1u;
     nfc_blocks = (nfc_length + 15u) / 16u;
-    /* Il blocco56 contiene anche registri fuori User: mai scriverlo integralmente. */
-    if (nfc_blocks > 55u || nfc_blocks * 16u > nfc_capacity) return false;
+    /* URC01 esige padding zero entro il CC. Pulisce soltanto filler FF
+       di un documento già riconosciuto, senza accedere al blocco misto 38h. */
+    for (unsigned i = nfc_length; i < nfc_capacity; ++i)
+    {
+        if (nfc_memory[i] == 0xFFu && i >= nfc_blocks * 16u)
+        {
+            unsigned blocks = i / 16u + 1u;
+            if (blocks > NFC_WRITE_BYTES / 16u || blocks * 16u > nfc_capacity) return false;
+            nfc_blocks = (uint8_t)blocks;
+        }
+    }
+    /* Il blocco 38h contiene anche lock e AUTH0: non scriverlo. */
+    if (nfc_blocks > NFC_WRITE_BYTES / 16u || nfc_blocks * 16u > nfc_capacity) return false;
     memmove(nfc_image + prefix, d, used);
     memset(nfc_image, 0, prefix);
     nfc_image[0] = 3;
@@ -595,6 +613,7 @@ typedef struct
     uint32_t values[CFG_PARAMETER_COUNT];
     uint32_t revision, request, applied, crc, software;
     uint8_t kind;
+    bool padding_ff;
     const uint8_t *extensions[16];
     uint16_t extension_sizes[16];
     unsigned extension_count;
@@ -611,9 +630,11 @@ static bool NfcParse(const uint8_t *memory, unsigned capacity, nfc_document_t *d
         at = 4; n = NfcU16(memory + 2);
     }
     if (n < 33 || at + n >= capacity || memory[at + n] != 0xFE) return false;
+    bool padding_ff = false;
     for (unsigned i = at + n + 1; i < capacity; ++i)
     {
         if (memory[i] != 0 && memory[i] != 0xFF) return false;
+        padding_ff |= memory[i] == 0xFFu;
     }
     const uint8_t *record = memory + at;
     if ((record[0] != 0xD2 && record[0] != 0xC2) || record[1] != 30) return false;
@@ -625,6 +646,7 @@ static bool NfcParse(const uint8_t *memory, unsigned capacity, nfc_document_t *d
     if (memcmp(d, "SD\x20\0", 4) || NfcU16(d + 4) != length ||
         NfcU32(d + length - 4) != NfcCrc(d, length - 4)) return false;
     memset(doc, 0, sizeof *doc);
+    doc->padding_ff = padding_ff;
     unsigned seen = 0, previous = 0, sections = 0;
     for (at = 6; at < length - 4;)
     {
@@ -690,8 +712,25 @@ static void NfcWait(const char *status)
     nfc_status = status;
     nfc_phase = N_WAIT;
     nfc_at = HAL_GetTick();
-    nfc_writing = false;
+    nfc_writing = nfc_resuming = false;
 }
+
+/* Ripete probe, controlli di protezione e scansione dopo RF. La ripresa è
+   consentita solo nella stessa accensione e con User identica all'atteso. */
+static void NfcPausePublication(void)
+{
+    if (!nfc_resuming)
+    {
+        nfc_resume_block = nfc_block;
+        nfc_resume_capacity = nfc_capacity;
+        memcpy(nfc_resume_header, nfc_header, sizeof nfc_header);
+        nfc_resuming = true;
+    }
+    nfc_status = "RF_BUSY";
+    nfc_phase = N_WAIT;
+    nfc_at = HAL_GetTick();
+}
+
 static bool NfcBlank(void)
 {
     unsigned start = nfc_memory[0] == 3 && nfc_memory[1] == 0 && nfc_memory[2] == 0xFE ? 3 : 0;
@@ -701,6 +740,36 @@ static bool NfcBlank(void)
     }
     return true;
 }
+/* Eccezione di recupero per l'esatto residuo rilevato sul banco.
+   Offset e lunghezza riguardano l'area User, dopo il Capability Container.
+   Chiamare soltanto con consenso Init persistente e dopo doppia scansione. */
+static bool NfcInitKnownFragment(unsigned *used)
+{
+    enum { offset = 0x30u };
+    static const uint8_t fragment[] = {
+        0x03, 0xCA, 0xD2, 0x25, 0xA2, 'a', 'p', 'p',
+        'l', 'i', 'c', 'a', 't', 'i', 'o', 'n'
+    };
+    static const uint8_t cc[] = {0xE1, 0x10, 0xEF, 0x00};
+
+    if (s_nfc_addr != 0x02u || nfc_capacity != NFC_USER_BYTES ||
+        memcmp(nfc_header + 12, cc, sizeof cc) ||
+        memcmp(nfc_memory + offset, fragment, sizeof fragment))
+    {
+        return false;
+    }
+    for (unsigned i = 0; i < NFC_USER_BYTES; ++i)
+    {
+        if ((i < offset || i >= offset + sizeof fragment) && nfc_memory[i] != 0)
+        {
+            return false;
+        }
+    }
+    *used = offset + sizeof fragment;
+    nfc_content_detail = "INIT_KNOWN_FRAGMENT";
+    return true;
+}
+
 /* Init esplicito: riconosce solo NDEF del dispositivo, senza importare i dati.
    Il legacy poteva iniziare dopo NULL TLV; il normale parser SDCP2 resta rigoroso. */
 static bool NfcOwnedContent(unsigned *used)
@@ -708,16 +777,19 @@ static bool NfcOwnedContent(unsigned *used)
     const uint8_t *m = nfc_memory;
     unsigned start = 0;
     while (start < nfc_capacity && m[start] == 0) ++start;
+    nfc_content_detail = "TLV";
     if (start + 4u >= nfc_capacity || m[start] != 3) return false;
     unsigned pos = start + 2, size = m[start + 1];
     if (size == 255) { size = NfcU16(m + start + 2); pos += 2; }
     if (size < 3 || pos + size >= nfc_capacity || m[pos + size] != 0xFE) return false;
     *used = pos + size + 1;
+    nfc_content_detail = "TRAILER";
     for (unsigned i = *used; i < NFC_USER_BYTES; ++i)
     {
         if (m[i] != 0 && m[i] != 0xFF) return false;
     }
     const uint8_t *r = m + pos;
+    nfc_content_detail = "NDEF";
     if (r[0] != 0xD2 && r[0] != 0xC2) return false;
     unsigned h = r[0] == 0xD2 ? 3 : 6;
     if (size < h) return false;
@@ -726,24 +798,36 @@ static bool NfcOwnedContent(unsigned *used)
     const uint8_t *data = r + h + r[1];
     const char legacy[] = "application/vnd.FGM.adsw100.cfg";
     const char sdcp[] = "application/vnd.studiodue.sdcp";
+    nfc_content_detail = "MIME";
     if (r[1] == sizeof legacy - 1 && !memcmp(r + h, legacy, sizeof legacy - 1))
     {
         char json[768], actual[64], expected[64], ip[16], mask[16], gw[16];
         uint8_t mode, net, sub;
         uint16_t universe, priority;
         bool dhcp;
+        nfc_content_detail = "LEGACY_JSON";
         if (length >= sizeof json || memchr(data, 0, length)) return false;
         memcpy(json, data, length); json[length] = 0;
         build_magic_from_eui(expected, sizeof expected, nfc_eui);
-        return json_to_cfg_vars(json, actual, sizeof actual, &mode, &universe, &net, &sub,
-                                &priority, &dhcp, ip, mask, gw) && !strcmp(actual, expected);
+        if (!json_to_cfg_vars(json, actual, sizeof actual, &mode, &universe, &net, &sub,
+                             &priority, &dhcp, ip, mask, gw)) return false;
+        if (strcmp(actual, expected))
+        {
+            nfc_content_detail = "LEGACY_IDENTITY";
+            return false;
+        }
+        nfc_content_detail = "LEGACY_OWNED";
+        return true;
     }
-    if (r[1] != sizeof sdcp - 1 || memcmp(r + h, sdcp, sizeof sdcp - 1) || length < 30 ||
-        memcmp(data, "SD\x20\0", 4) || NfcU16(data + 4) != length ||
+    if (r[1] != sizeof sdcp - 1 || memcmp(r + h, sdcp, sizeof sdcp - 1)) return false;
+    nfc_content_detail = "SDCP_ENVELOPE";
+    if (length < 30 || memcmp(data, "SD\x20\0", 4) || NfcU16(data + 4) != length ||
         NfcU32(data + length - 4) != NfcCrc(data, length - 4)) return false;
     /* Identità standard all'inizio del documento; niente applicazione di VALUES. */
-    return data[6] == 1 && data[7] == 1 && NfcU16(data + 8) == 16 &&
-           !memcmp(data + 10, nfc_identity, 6) && !memcmp(data + 20, nfc_identity + 10, 6);
+    bool owned = data[6] == 1 && data[7] == 1 && NfcU16(data + 8) == 16 &&
+        !memcmp(data + 10, nfc_identity, 6) && !memcmp(data + 20, nfc_identity + 10, 6);
+    nfc_content_detail = owned ? "SDCP_OWNED" : "SDCP_IDENTITY";
+    return owned;
 }
 
 static bool NfcPublish(uint32_t *saved)
@@ -755,6 +839,7 @@ static bool NfcPublish(uint32_t *saved)
         if (clear > nfc_blocks) nfc_blocks = clear;
         if (nfc_blocks > 55 || nfc_blocks * 16u > nfc_capacity) return false;
     }
+    memcpy(nfc_previous, nfc_memory, NFC_USER_BYTES);
     nfc_writing = true;
     nfc_block = 0;
     nfc_phase = N_WRITE_RF;
@@ -789,6 +874,11 @@ static void NfcProcess(void)
     nfc_document_t doc;
     bool valid = NfcParse(nfc_memory, nfc_capacity, &doc);
     bool blank = NfcBlank();
+    unsigned owned_size = 0;
+    nfc_content_detail = "-";
+    bool owned = !valid && !blank && NfcOwnedContent(&owned_size);
+    nfc_content = valid ? (doc.kind ? "REQUEST" : "SNAPSHOT") :
+        blank ? "BLANK" : owned ? "OWNED_UNSUPPORTED" : "UNRECOGNIZED";
     int metadata = EE_NfcRead(&nfc_meta);
     if (metadata < 0 || !NfcSaved(saved))
     {
@@ -802,13 +892,23 @@ static void NfcProcess(void)
     }
     if (metadata == 1 && nfc_meta.state == EE_NFC_INIT_TAG)
     {
-        nfc_factory_used = 0;
-        if ((!blank && !NfcOwnedContent(&nfc_factory_used)) || !NfcRuntimeEqual(saved))
+        if (valid) owned = NfcOwnedContent(&owned_size);
+        if (!blank && !owned)
         {
-            NfcWait("INIT_FOREIGN_OR_EDIT");
+            owned = NfcInitKnownFragment(&owned_size);
+        }
+        nfc_factory_used = owned_size;
+        if (!blank && !owned)
+        {
+            NfcWait("INIT_UNRECOGNIZED");
             return;
         }
-        if (valid && !doc.kind && doc.revision == nfc_meta.revision && doc.applied == nfc_meta.request &&
+        if (!NfcRuntimeEqual(saved))
+        {
+            NfcWait("INIT_CONFIG_MISMATCH");
+            return;
+        }
+        if (valid && !doc.kind && !doc.padding_ff && doc.revision == nfc_meta.revision && doc.applied == nfc_meta.request &&
             NfcSameValues(saved, doc.values) && doc.software == NfcU32(nfc_identity + 6))
         {
             if (EE_NfcSeal(&nfc_meta, EE_NFC_COMMITTED) == HAL_OK)
@@ -933,6 +1033,7 @@ static void NfcProcess(void)
                 NfcWait("METADATA_ERROR");
                 return;
             }
+            uint8_t saved_backlight = lcd_backlight;
             EE_NfcTransaction(true);
             bool ok = NfcApply(doc.values) && EE_SaveConfig() == HAL_OK;
             EE_NfcTransaction(false);
@@ -940,6 +1041,7 @@ static void NfcProcess(void)
             if (!ok || !NfcSaved(verify) || !NfcSameValues(verify, doc.values))
             {
                 (void)NfcApply(saved);
+                lcd_backlight = saved_backlight;
                 NfcWait("REQUEST_RECOVERY_REQUIRED");
                 return;
             }
@@ -962,7 +1064,7 @@ static void NfcProcess(void)
     {
         if (doc.revision == nfc_meta.revision && doc.applied == nfc_meta.request && NfcSameValues(saved, doc.values))
         {
-            if (doc.software != NfcU32(nfc_identity + 6))
+            if (doc.padding_ff || doc.software != NfcU32(nfc_identity + 6))
             {
                 if (!NfcPublish(saved)) NfcWait("CAPACITY_ERROR");
             }
@@ -998,6 +1100,11 @@ static bool NfcWrite(uint8_t reg, const uint8_t *data, nfc_phase_t next)
         return false;
     }
     if (!BUS_Write(BUS_NFC, s_nfc_addr, reg, (uint8_t *)data, 16)) return false;
+    /* Aggiornamento atteso in RAM. Un errore IT annulla la ripresa prima del confronto. */
+    if (reg > 0 && nfc_writing)
+    {
+        memcpy(nfc_previous + (reg - 1u) * 16u, data, 16);
+    }
     nfc_pending = true;
     nfc_after = next;
     return true;
@@ -1018,7 +1125,7 @@ void NFC_Init(void)
     nfc_extension_length = 0;
     nfc_cc_provision = false;
     nfc_phase = N_HEADER;
-    nfc_pending = nfc_second = nfc_writing = false;
+    nfc_pending = nfc_second = nfc_writing = nfc_resuming = false;
     nfc_io_at = HAL_GetTick();
     nfc_identity_ok = false;
     uint8_t eui[6];
@@ -1039,6 +1146,8 @@ void NFC_Init(void)
     nfc_ev_irqs = nfc_er_irqs = 0;
     nfc_tx_callbacks = nfc_rx_callbacks = nfc_error_callbacks = 0;
     nfc_status = nfc_identity_ok ? "PROBING" : "IDENTITY_ERROR";
+    nfc_content = "UNSCANNED";
+    nfc_content_detail = "-";
 }
 
 /* Tutti gli scambi NTAG sono IT e cedono il main. Le API EEPROM legacy
@@ -1086,8 +1195,8 @@ void NFC_Service(void)
         return;
     }
     /* Finisce l'operazione pendente ma non ne avvia altre mentre il pannello
-       configura: evita BUSY sul salvataggio, senza interferire con la navigazione. */
-    if (UI_ConfigActive()) return;
+       configura o RDM deve salvare: evita una nuova riserva durante il commit. */
+    if (UI_ConfigActive() || RDM_SavePending()) return;
     /* Lascia intervalli liberi a EEPROM/RTC fra le operazioni NFC. */
     if (HAL_GetTick() - nfc_io_at < 2u) return;
     switch (nfc_phase)
@@ -1129,6 +1238,12 @@ void NFC_Service(void)
             }
             nfc_capacity = nfc_cc_provision ? 816u : (uint16_t)nfc_header[14] * 8u;
             if (nfc_capacity > NFC_USER_BYTES) nfc_capacity = NFC_USER_BYTES;
+            if (nfc_resuming && (!cc_valid || nfc_capacity != nfc_resume_capacity ||
+                memcmp(nfc_header, nfc_resume_header, sizeof nfc_header)))
+            {
+                NfcWait("TAG_CHANGED");
+                break;
+            }
             if (nfc_capacity < NFC_IMAGE_BYTES)
             {
                 NfcWait("CAPACITY_ERROR");
@@ -1170,7 +1285,8 @@ void NFC_Service(void)
         case N_SCAN:
             if (nfc_rf & 0x21u)
             {
-                NfcWait("RF_BUSY");
+                if (nfc_resuming) NfcPausePublication();
+                else NfcWait("RF_BUSY");
                 break;
             }
             if (nfc_block <= 56)
@@ -1179,6 +1295,18 @@ void NFC_Service(void)
                 break;
             }
             ++nfc_reads;
+            if (nfc_resuming)
+            {
+                if (memcmp(nfc_previous, nfc_memory, NFC_USER_BYTES))
+                {
+                    NfcWait("TAG_CHANGED");
+                    break;
+                }
+                nfc_block = nfc_resume_block;
+                nfc_resuming = false;
+                nfc_phase = N_WRITE_RF;
+                break;
+            }
             if (!nfc_second)
             {
                 memcpy(nfc_previous, nfc_memory, NFC_USER_BYTES);
@@ -1206,15 +1334,15 @@ void NFC_Service(void)
             break;
         }
         case N_INVALIDATE:
-            if (nfc_rf & 0x21u) { NfcWait("RF_BUSY"); break; }
+            if (nfc_rf & 0x21u) { NfcPausePublication(); break; }
             if (NfcWrite(1, nfc_invalid, N_WRITE_RF)) nfc_block = 2;
             break;
         case N_BODY:
-            if (nfc_rf & 0x21u) { NfcWait("RF_BUSY"); break; }
+            if (nfc_rf & 0x21u) { NfcPausePublication(); break; }
             if (NfcWrite(nfc_block, nfc_image + (nfc_block - 1u) * 16u, N_WRITE_RF)) ++nfc_block;
             break;
         case N_FINISH:
-            if (nfc_rf & 0x21u) { NfcWait("RF_BUSY"); break; }
+            if (nfc_rf & 0x21u) { NfcPausePublication(); break; }
             if (NfcWrite(1, nfc_image, N_VERIFY)) nfc_verify_block = 1;
             break;
         case N_VERIFY:
@@ -1270,11 +1398,11 @@ void NFC_FormatDiagnostics(char *out, size_t capacity)
     BUS_NfcDiagnostics(&bus);
     char address[3] = "--";
     if (nfc_confirmed_addr) snprintf(address, sizeof address, "%02X", nfc_confirmed_addr);
-    snprintf(out, capacity, "nfc=%s addr=%s probe=%02X hal=%02X capacity=%u rev=%lu request=%lu state=%02X scans=%lu applied=%lu replay=%lu errors=%lu timeout=%lu nack=%lu\r\n",
+    snprintf(out, capacity, "nfc=%s addr=%s probe=%02X hal=%02X capacity=%u rev=%lu request=%lu state=%02X scans=%lu applied=%lu replay=%lu errors=%lu timeout=%lu nack=%lu tag=%s detail=%s\r\n",
              nfc_status, address, s_nfc_addr, NfcHalAddress(s_nfc_addr), nfc_capacity,
              (unsigned long)nfc_meta.revision, (unsigned long)nfc_meta.request, nfc_meta.state,
              (unsigned long)nfc_reads, (unsigned long)nfc_applied, (unsigned long)nfc_replays,
-             (unsigned long)nfc_errors, (unsigned long)bus.timeouts, (unsigned long)bus.nacks);
+             (unsigned long)nfc_errors, (unsigned long)bus.timeouts, (unsigned long)bus.nacks, nfc_content, nfc_content_detail);
 }
 
 /* Fotografia dell'ultimo errore prima del reset HAL; nessun I/O o stampa in ISR. */

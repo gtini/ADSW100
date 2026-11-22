@@ -1,5 +1,279 @@
 # Audit ADSW100 prima della v2.0.0
 
+## Diagnosi sul banco dopo Init Memory
+
+Il log utente riporta `FOREIGN_OR_INVALID`, indirizzo confermato 02, capacità
+888, revisione 4, stato C3 e 150 scansioni. Lo stato osservato è un edit locale,
+mentre l'intento attivo per ricostruire il tag è E8. Il test host riproduce
+lo stesso esito con un documento sperimentale proprio se un salvataggio
+avviene dopo Init e prima della pubblicazione. Il tag e i nuovi valori
+persistenti sono preservati. Un Init successivo in questo test, senza edit
+prima di SYNCED, pubblica correttamente il nuovo SNAPSHOT. L'utente ha poi confermato di avere modificato soltanto lo spegnimento
+automatico del display appena terminato Init Memory. La CDC ha mostrato
+`ee writes=4 addr=22 len=1 rc=0 reserved=0 transaction=0 local=1 meta_rc=1 meta=E8`
+mentre `nfc?` riportava C3 e revisione 4. L'offset 22 è il byte backlight.
+Questo conferma che il salvataggio è partito da E8 ed è riuscito, revocando
+l'intento prima della pubblicazione. Il contenuto effettivo del tag e la
+riuscita della successiva pubblicazione restano da verificare.
+
+La nuova diagnostica `tag=` in `nfc?` distingue documento precedente proprio
+da contenuto non riconosciuto e da SNAPSHOT/REQUEST del contratto corrente.
+L'esito proviene dall'ultima scansione stabile. La diagnostica non effettua
+scritture e l'autorizzazione alla rigenerazione resta quella esistente.
+La lettura CDC è stata eseguita dopo aver chiuso il terminale. Il riavvio
+del listener sACN appartiene al servizio di rete e viene analizzato
+separatamente da questo esito del parser NFC.
+
+Seconda prova senza modifiche dopo Init. La CDC riporta `INIT_FOREIGN_OR_EDIT`,
+`rev=5 state=E8`, 72–77 scansioni, `ee writes=0` dopo il riavvio,
+`magic=A55A cfg=0`, 2 NACK storici e zero timeout. Il precedente passaggio
+a C3 è escluso in questa prova. Resta da distinguere riconoscimento del
+contenuto e confronto fra RAM ed EEPROM. La nuova build Release diagnostica
+(`/private/tmp/adsw100-nfc-initdiag/Release/ADSW100.hex`) separa
+`INIT_UNRECOGNIZED` e `INIT_CONFIG_MISMATCH` e mostra il punto di rifiuto
+dell'analisi NDEF in `detail=`. Entrambi i percorsi testati su host senza
+scritture al tag, build ARM senza warning. La CDC URC01 era occupata e
+la sonda non risultava collegata. Nessuna nuova programmazione eseguita.
+
+Acquisizione successiva con ST-LINK in hot-plug. Il vettore in flash
+`2407FFE0 0800B9F9` corrisponde alla Release locale. I due buffer
+`nfc_memory` e `nfc_previous` coincidono per tutti gli 888 byte User.
+Il CC è `E1 10 EF 00`. Tutti i byte User sono zero salvo il blocco
+all'offset `0x30`, che contiene `03 CA D2 25 A2` seguito da
+`application`. Il TLV dichiara 202 byte. MIME dichiarato 37 byte e
+payload dichiarato 162 byte, ma i byte successivi al frammento e il
+terminatore atteso sono zero. L'assenza del terminatore fa fallire
+`NfcOwnedContent` prima del confronto RAM ed EEPROM. La lettura conferma
+lo stato di NDEF troncato, senza dimostrare quale operazione passata
+l'abbia prodotto. Il valore coincide con l'anomalia MIME già riportata
+durante una precedente lettura.
+
+Dump conservato in `/private/tmp/adsw100-nfc-bank/ntag-user-sector0.bin`,
+CRC32 `7FEA539C`. E8 rimane pendente. La riparazione proposta consiste
+nel cancellare soltanto il blocco User I²C `0x04` verificato, dopo consenso
+esplicito, e lasciare che il servizio pubblichi il nuovo SNAPSHOT dalla
+configurazione verificata. Nessun tentativo di riscrittura è stato eseguito.
+
+### Correzione Init per il frammento verificato
+
+L'operatore ha autorizzato la sostituzione del frammento acquisito con il
+documento applicativo. `NfcInitKnownFragment` è invocata soltanto nel percorso
+Init con consenso E8 persistente, dopo doppia scansione e controlli hardware.
+Richiede indirizzo confermabile 02, CC E110EF00, i 16 byte esatti
+all'offset User 30h e zero in tutti gli altri byte User. Riconosce soltanto
+questa forma e non ne importa valori. Il writer esistente pubblica lo
+SNAPSHOT dalla configurazione verificata, controlla tutti i blocchi riletti
+e consuma E8 solo dopo il readback. Il riavvio post-flash può riprendere
+il consenso E8 già presente, senza un nuovo Init Memory.
+
+Il riferimento DRV_STG4, `Core/Src/nfc.c:InitDocumentAllowed` e
+`docs/NFC_INIT_RIGENERAZIONE.md`, conferma la sequenza di consenso, guardie
+RF e readback. Il percorso ordinario DRV richiede il MIME completo oppure
+una prova nel journal. ADSW100 conserva il proprio driver e non introduce
+un journal per questo frammento, la cui riscrittura è stata autorizzata
+in modo specifico.
+
+Test host sul dump esatto con E8, senza E8, con un byte diverso o dati
+aggiuntivi, CC differente e AUTH0 attivo. In presenza RF il writer aspetta;
+dopo successo restano identici i 40 byte legacy, il blocco CC e i blocchi
+a partire da 38h. Il riavvio a consenso consumato non riscrive. Build ARM
+Debug/Release senza warning e regressioni host. Artefatto Release
+`/private/tmp/adsw100-nfc-init-repair/Release/ADSW100.hex`. Collaudo hardware
+pendente e nessun flash eseguito dall'agente.
+
+## Completamento SDCP2 e catalogo ST2FW v3 — 22 novembre 2026
+
+**Riferimenti effettivi.** La copia Dropbox di URC01 è a `b7f9af0`. Il checkout
+`~/micro/Studio Due/URC_100` è a `84c3eb2` e contiene `7c42965`, il codec
+SDCP2 e il parser catalogo più recenti. Per DRV è stato letto il checkout
+`~/micro/Studio Due/DRV_STG4` a `b3ba66f`, comprese le modifiche locali in
+`Core/Src/nfc.c` e i documenti NFC di Init e revisione. Il riferimento
+Hardware H7 resta il driver I²C ADSW100. I tre progetti di riferimento sono
+stati consultati in sola lettura.
+
+**Incompatibilità confermata.** ADSW100 emetteva SCHEMA_REF da 36 byte, mentre
+DRV e il parser URC attuale usano solo la revisione BE32. `NfcBuild` e
+`NfcParse` ora usano la sezione da 4 byte. L'identità 17FA:0060/rev1 resta
+quella del catalogo ADSW100 già riconosciuto da URC01. Il contratto delle
+15 istanze resta uguale. Il formato sperimentale viene respinto dal parser
+delle richieste. Un Init Memory esplicito può sostituire un documento proprio
+verificato per identità e CRC, incluso quello sperimentale o il JSON legacy
+proprio. L'Init non importa valori dal tag. Tag estranei e protezioni restano
+preservati. SNAPSHOT base 165 byte SDCP, 201 byte NDEF/TLV e 208 byte I²C allineati.
+
+**Correzioni del servizio.** `NFC_Service` termina uno scambio pendente e
+cede la porta al pannello e a RDM quando quest'ultimo deve salvare. La
+pubblicazione si sospende se torna il campo RF. Nella stessa accensione
+riprende solo dopo aver ripetuto le guardie NTAG/CC e confrontato l'intera
+finestra User con l'immagine attesa, inclusi i blocchi già pubblicati.
+Prima di ogni scrittura la revisione EEPROM viene nuovamente verificata.
+I filler FF possono essere azzerati nei blocchi User completi, come richiesto
+dal parser URC01 che esige padding a zero. Il blocco misto 38h, che contiene
+anche lock e AUTH0, è escluso dalle scritture. Se la coda nel blocco misto
+richiede modifiche, il servizio restituisce CAPACITY_ERROR. La finestra comune
+è al massimo 888 byte letti e 880 byte scritti. Indirizzi 7 bit, riconoscimento
+NTAG, sessione STOP/READ, rilascio di I2C_LOCKED, IRQ e timeout preesistenti.
+Per la mappa fisica si veda [NXP NT3H2111/2211](https://www.nxp.com/docs/en/data-sheet/NT3H2111_2211.pdf).
+
+**Persistenza e limiti.** Snapshot da EEPROM verificata, cfg condivisa,
+preflight ACK, metadati B6 prima della scrittura, verifica dell'intero
+candidato e commit prima dell'ACK. Il rollback RAM in errore conserva
+anche la luminosità legacy raw. Una richiesta obsoleta non sovrascrive
+l'edit locale. Il bootstrap di un tag vuoto legge la configurazione già
+valida e non esegue Init Memory. Dopo power-cut durante pubblicazione,
+un NDEF parziale di provenienza ambigua viene lasciato intatto. Rispetto
+a DRV non si introduce un journal ausiliario sul tag. L'atomicità fisica
+delle scritture EEPROM in-place non è garantita.
+
+**Catalogo e packaging.** Il JSON ordinato è in
+[protocol/nfc/catalogs/ADSW100.json](../protocol/nfc/catalogs/ADSW100.json).
+L'unità secondi e il prefisso IPv4 usano i campi già condivisi con il
+validatore Builder. Il modulo formato v3 di URC e quello RSH7 usato dal
+Builder accettano il catalogo. Con un'immagine DRV originale e il relativo
+JSON, entrambi verificano header da 96 byte, offset contigui, dimensioni,
+CRC header/BIN/JSON, identità e preservazione byte-per-byte del BIN
+anche con catalogo assente. Sul BIN ADSW100 entrambi restituiscono
+«Descriptor magic errata», perché il firmware non implementa SDI1/SDC1.
+La UI locale del Builder esaminato espone ancora prepare(source, model);
+il modulo formato v3 ha già il parametro catalogo. Non è stato generato
+alcun ST2FW ADSW100 programmabile. URC01 usa il catalogo su SD dal
+contenitore ST2FW e al momento può leggere ADSW100 in RAW.
+
+**Verifiche.** Suite ADSW ASan/UBSan con 19 vettori, snapshot, commit singoli
+e multipli, 21 transazioni complete, ACK e replay, RF intermittente,
+tag protetto/estraneo/legacy, timeout e guasti I²C, 170 iniezioni di errore,
+68 tagli al byte per REQUEST e 24 per Init. Verificati reload dei valori
+multi incluso backlight, OFF Time e rete, byte legacy non interessati e
+cessione del bus a RDM. Il test indipendente usa `sdcp2.c`,
+`nfc_catalog.c` e `crc32.c` reali di URC01 con ASan/UBSan. Confermati
+parsing streaming, 15 istanze, REQUEST identica e ACK prodotto da ADSW.
+Stabilizzazione host con test traffico Node, DMX, RDM, rete, relè, RTC
+mock, USB e boot superati. Debug e Release ARM complete da 150 unità,
+senza warning, vettore MSP 2407FFE0 verificato. Versione firmware invariata.
+Nessun test RF o aggiornamento eseguito sul dispositivo in questa fase.
+
+I passi di collaudo e gli artefatti sono in [NFC_PROTOCOL.md](NFC_PROTOCOL.md).
+
+## DFU ROM9.1: guasto acquisito e workaround stack — 22 novembre 2026
+
+**Aggiornamento rispetto all'analisi iniziale sotto:** l'utente programma con CubeProgrammer via **USB DFU del ROM ST**, non tramite il launch CubeIDE/SWD. Entra premendo BOOT, RESET con BOOT premuto, poi rilascia BOOT. Nessun bootloader custom è presente nel repository, ma il ROM ST fa parte del percorso reale. Il primo avvio è riuscito; una successiva programmazione, con DMX ed Ethernet collegati rispetto al tentativo precedente, lascia display vecchio, status LED fermo e nessuna CDC ADSW. Non si tratta in quella cattura della schermata applicativa Wait for boot.
+
+### Evidenze hardware, senza flash/reset dell'agente
+
+ST-LINK V2 collegata successivamente, target STM32H7 RevV, BL0x91. Connessione esplicita HOTPLUG. La lettura core comporta arresto transitorio; la CLI ripristina poi l'esecuzione, come mostra il successivo score. Nessun comando reset, go, erase, program, option-byte write o modifica EEPROM.
+
+```text
+PC=1FF0A594 (seconda cattura1FF0A480)  LR=1FF125AB
+VTOR=1FF09800  MSP=24004470  R5=40011000
+PRIMASK=0 BASEPRI=0 FAULTMASK=0 CONTROL=0
+CFSR=0 HFSR=0
+Flash08000000:24080000 0800B831 080098DD 080098DF
+RCC.RSR=00460000 FLASH.BOOT_CUR=1FF00800
+```
+
+Il core è nel ROM, non nel firmware ADSW100. I56byte startup_diag dell'immagine effettiva a24003BAC sono zero. Questo dimostra lo stato attuale; non ricostruisce da solo tutti i passaggi precedenti al blocco. Flash/vettori corrispondono alla Release locale osservata, dimensione132024byte; copia ELF/HEX/MAP e hash conservati in `observed-release/` della cartella diagnostica Debug.
+
+La lettura ROM attorno a PC conferma il ciclo a1FF0A592: lettura `[R5+0x1C]`, test bit15 e attesa. R5=USART1base40011000: si attende ABRF nel registro ISR, cioè completamento autobaud. I registri ROM USART1 mostrano CR1=140D, CR2=00500000 (autobaud abilitato), non la configurazione DMX dell'applicazione. Il traffico esterno DMX arriva proprio su PB15/USART1 e costituisce una condizione da isolare; Ethernet non è stata identificata come causa. Non si modifica il driver DMX per correggere codice che sta eseguendo in ROM.
+
+### Difetto di compatibilità dell'immagine e correzione minima
+
+[AN2606 Rev71, tabella146, pagina348](https://www.st.com/resource/en/application_note/an2606-stm32-microcontroller-system-memory-boot-mode-stmicroelectronics.pdf) documenta per ROM9.1 un problema del salto all'applicazione: MSP deve essere strettamente inferiore a fine RAM meno16byte. Il vettore letto sulla scheda è invece24080000, esattamente fine RAM_D1. È una non conformità verificata, indipendente dalle ipotesi su EEPROM/NFC.
+
+Corretto soltanto il simbolo `_estack` in `STM32H743VITX_FLASH.ld`: fineRAM−32, cioè **2407FFE0**, allineato8 e strettamente sotto2407FFF0. Nessuna modifica di lunghezza RAM, heap/stack minimi, clock, reset o temporizzazione; newlib `_sbrk` usa già `_estack` per il limite heap. Nessuna modifica della mappa EEPROM o delle protezioni. Conservare il workaround se CubeIDE rigenera il linker; il nuovo controllo del vettore segnala la regressione.
+
+Per evitare un confronto che cambi ottimizzazione o codice, gli stessi oggetti della Release realmente programmata sono stati rilinkati: con il vecchio linker il BIN coincide byte-per-byte con quello osservato. Con il linker corretto la lunghezza resta132024byte e cambiano **solo tre parole**: offset0,9A00,B86C, ciascuna da24080000 a2407FFE0 (vettore MSP e riferimenti al simbolo). Nessun opcode o parametro applicativo diverso.
+
+Artefatto A/B: `/private/tmp/adsw100-boot-20261122-stackfix-release-ab/ADSW100.hex`, con ELF/BIN/MAP e verification.json. SHA-256 BIN `db9643d67a1e48eab47ae20428caae41513ccdf25013e18c4b47764b798bb761`. Nessun file della Release utente sovrascritto dall'agente.
+
+### Test A/B con stack corretto: esito negativo, stesso blocco ROM
+
+L'utente ha programmato manualmente lo HEX A/B con DMX ed Ethernet presenti e riferisce ancora blocco. Acquisizione successiva conferma in flash MSP2407FFE0/Reset0800B831: non è stato caricato per errore il vecchio vettore. VTOR resta1FF09800, startup_diag zero, PC1FF0A57E, R5USART1, MSPROM24004470; fault Cortex non evidenziati. Log `hardware-failure-01.log` nella cartella A/B. Il workaround documentato elimina una non conformità ma **non risolve da solo il guasto attuale** e non va presentato come causa unica dimostrata.
+
+Scollegare soltanto DMX dopo il blocco non ripristina l'avvio (risposta utente). Ciò non esclude un protocollo/stato già selezionato dal ROM: è necessaria una nuova sequenza DFU con i collegamenti predisposti prima. Avviata matrice stesso HEX: nessun cavo dati, sola Ethernet, solo DMX; fermarsi al primo blocco e acquisire. Una lettura GPIO tentata durante il successivo riassetto banco non ha acquisito dati (ST-LINK riportava Vref0/no target); non è stata usata per dedurre lo stato di PB15 o un nuovo guasto firmware.
+
+### Esito della prova sui collegamenti
+
+L'utente conferma che l'avvio automatico riesce sempre nelle prove eseguite con l'ingresso DMX scollegato, anche con Ethernet collegata. Il blocco si presenta quando è presente un segnale DMX durante la programmazione USB DFU. Questo esito, insieme alla cattura del ciclo di attesa autobaud su USART1, identifica il traffico DMX sull'ingresso condiviso PB15 come condizione che innesca il blocco nel bootloader ROM su questo banco.
+
+Per aggiornare tramite CubeProgrammer, scollegare il DMX prima di entrare in USB DFU e ricollegarlo dopo l'avvio dell'applicazione. Ethernet può restare collegata. Il margine sullo stack resta una correzione di compatibilità con il ROM 9.1 e da solo non consente l'aggiornamento con DMX attivo. L'aggiornamento con DMX attivo richiede un percorso di aggiornamento che eviti l'interferenza con il ROM.
+
+### Verifica e limiti
+
+Build complete Debug/Release150unità, senza warning, nelle cartelle `adsw100-boot-20261122-stackfix-debug` e `adsw100-boot-20261122-stackfix-release` sotto /private/tmp. Verificato sul vettore ELF realmente linkato: MSP2407FFE0, allineamento8, soglia ROM rispettata, Reset_Handler Thumb corretto, heap/stack minimi entro il limite. I test host su magic/I/O/token, CDC e regressioni dei protocolli passano; non simulano il ROM ST.
+
+Il fatto che il ROM acquisito stia aspettando autobaud e il difetto documentato del valore MSP sono **due evidenze da non confondere con una causalità già provata per tutti i sintomi**. La correzione elimina la non conformità dell'immagine; deve ancora dimostrare sul banco l'uscita DFU affidabile e non attribuisce retroattivamente a ROM9.1 ogni precedente Wait for boot.
+
+Richiesto test manuale dello HEX A/B mantenendo gli stessi DMX/Ethernet e procedura BOOT/RESET. Se parte: ripetere5aggiornamenti senza power cycle, poi reset hardware e cold boot, verificando brand/parametri. Se si blocca: preservare stato e acquisire core/CDC; poi separare DMX presente/assente mantenendo Ethernet e immagine uguali. Un impedimento nel ROM prima dell'applicazione non si corregge con ritardi, reset o override del magic dentro main.
+
+Riferimenti procedurali: [UM2237, HOTPLUG/coreReg](https://dev.st.com/stm32cube-docs/prog/2.23.0/en/docs/markup/CubeProg_Command_Lines.html) e [AN3156, uscita DFU](https://www.st.com/resource/en/application_note/an3156-how-to-use-usb-dfu-protocol-in-bootloader-on-stm32-mcus-stmicroelectronics.pdf). Hotplug non applica il reset di default mostrato nell'intestazione CLI; coreReg arresta per la lettura. I log raw e i due brevi dump ROM sono nella cartella diagnostica Debug.
+
+
+## Avvio automatico dopo programmazione — 22 novembre 2026
+
+Baseline esaminata: commit utente `7d184e5`, che conserva esplicitamente il problema dopo programmazione. **Causa fisica del blocco ancora non confermata**: inizialmente nessuna CDC visibile; successivamente eseguita acquisizione CDC read-only riportata sotto. Nessun flash, reset remoto o comando di scrittura sul dispositivo. Confermato e corretto il difetto che interpretava una lettura I/O fallita come richiesta di provisioning. Questa correzione e la diagnostica non equivalgono alla dimostrazione del riavvio automatico corretto.
+
+### Percorso reale e protezione presente
+
+1. Linker `STM32H743VITX_FLASH.ld`: vettori/app a0x08000000, nessuno spazio riservato a un bootloader separato. `startup_stm32h743vitx.s:Reset_Handler` imposta MSP, chiama ExitRun0Mode/SystemInit, copia .data, azzera .bss, chiama costruttori e main. `USER_VECT_TAB_ADDRESS` non è abilitato. Nei sorgenti non è implementato un handoff da un bootloader residente.
+2. main configura MPU/cache, HAL e clock480MHz, periferiche inclusi I2C1/USB/IWDG/lwIP, quindi TIM6 e attesa preesistente1s con refresh watchdog, log reset, LCD, RTC esterno, DMX/relè/UI, hardware_check.
+3. hardware_check esegue scan bus, dump EEPROM, ping53, lettura EUI-48/EUI-64, MAC (fallback UID se necessario già esistente) e EE_LoadConfig. Quest'ultima valida e pubblica i parametri e gestisce le migrazioni già previste; nessuna modifica a tali funzioni. Il fallimento anticipato del ping salta il caricamento: ora boot? lo distingue da un caricamento tentato/fallito.
+4. Startup_SimpleUnlock legge INIT a00..01, BE16 A55A. Con magic valido ritorna subito. Prima della correzione EE_ReadU16 restituiva0 anche su errore HAL: il chiamante perdeva la distinzione fra EEPROM illeggibile e valore effettivo diverso da A55A.
+5. Soltanto con lettura riuscita e magic diverso il codice preesistente mostra Wait for boot, costruisce token esatto `FGM` + MAC esadecimale e attende30s. Solo il token corretto chiama HardFactoryReset(false). Token errato o nessun token non avviano l'app; dopo30s la schermata resta e il watchdog viene alimentato per sempre. Nessun bootloader/DFU è implementato in questa attesa: il commento lo indica come futuro.
+6. Dopo INIT valido: Network_InitAfterLwip, RDM_Init, NFC_Init, superloop. NFC runtime non è ancora avviato nel punto del controllo INIT. Ciò non esclude uno stato elettrico esterno sopravvissuto al reset di una precedente esecuzione.
+
+Nel repository non compare una protezione denominata ST2: il controllo effettivo qui è FGM/MAC. Non è stata inventata, introdotta o disattivata alcuna procedura ST2. Token, MAC, funzioni di provisioning e comportamento dei dispositivi correttamente leggibili restano invariati.
+
+### Reset, salto e stato residuo
+
+Il launch salvato punta a Debug/ADSW100.elf e connect_under_reset; include le opzioni system/core/hardware/no reset. Non prova quale procedura sia stata usata dal programmatore reale. Il reset software esistente nel codice è NVIC_SystemReset dopo Init Memory esplicito; non è il percorso ordinario post-flash e non è stato aggiunto alcun reset.
+
+Un ingresso da Reset_Handler passa dalla preparazione C/RAM; un salto diretto a main la salterebbe, ma nel repository non è presente un tale salto. SystemInit e HAL_Init non sono un power cycle degli slave I2C esterni. Il corpo HAL_Init locale configura NVIC/SysTick/MSP: il commento generato "Reset of all peripherals" non dimostra un reset globale di ogni periferica.
+
+La nuova fotografia viene acquisita **all'ingresso main**, prima di MPU/cache/HAL, quindi dopo SystemInit e startup C: RCC.RSR, VTOR, MSP, PRIMASK/BASEPRI, CONTROL, IPSR. Non pretende di rappresentare i registri prima di SystemInit. Mantiene i flag prima del successivo LogAndClearResetFlags. Un VTOR o mascheramento anomalo è un'indicazione da correlare con il launch, non prova autonoma di un bootloader.
+
+### Modifica minima e limiti
+
+- `main.c:Startup_SimpleUnlock`: lettura esplicita EE_Read dei2byte con stato HAL; fotografia immediata di stato/lock/errore HAL, ISR/CR1 e PB6/PB7. Su I/O fallito mostra **EEPROM read error**, mantiene la protezione, non tenta il token, non inizializza, non scrive e non prosegue con una configurazione presunta. Nessun retry automatico, bus-clear, reset o delay aggiunto.
+- Con I/O riuscito mantiene integralmente confronto A55A, token FGM/MAC e deadline30s. Non modifica la politica di caricamento o migrazione EEPROM né il fallback MAC preesistente.
+- `usb_debug.c:USB_ReadLineTimeout`: sole query read-only `boot?`, `i2c?`, `ee?` servite durante provisioning e blocchi. Gli altri comandi restano restituiti al chiamante: non si eseguono setter di fabbrica/NFC nella modalità di attesa. Il token resta gestito esclusivamente dalla funzione originaria. La coda CDC conserva la risposta sotto backpressure.
+- `Startup_FormatDiagnostics`: dati esclusivamente RAM, senza riletture EEPROM/I2C. `boot?` disponibile anche nel funzionamento normale. Nessuna stampa in IRQ.
+
+File EEPROM, I2C/RTC, NFC, DMX/RDM/Art-Net/sACN/relè, catalogo, configurazione CubeIDE e launch verificati identici per hash alla baseline di questo intervento. Modifiche main soltanto USER CODE. Nessuna modifica a mappa0x00..0x37 o parametri persistenti.
+
+### Interpretazione diagnostica
+
+`boot?`: stage0 ingresso main,1 controllo HW,2 lettura INIT,3 INIT valido (non certifica che tutti i servizi successivi siano partiti),4 attesa token,5 errore lettura,6 attesa finale dopo timeout. rc=-1 non ancora tentato,0 OK,1 ERROR,2 BUSY,3 TIMEOUT; magic=---- significa **dato non affidabile**, non valore letto0. cfg=-1 non tentato, altrimenti stato HAL del caricamento. mac=0 non determinato,1 E48,2 E64,3 fallbackUID; brand_ram è il brand RAM, non una rilettura persistente. reset/VTOR/MSP/mask/control/ipsr sono la fotografia d'ingresso main; mask bit0 PRIMASK, bit8..15 BASEPRI. hal/lock/err/ISR/CR1/lines sono la fotografia subito dopo la lettura INIT.
+
+`i2c?` fornisce il confronto con lo stato corrente e la precedente fotografia dopo init periferiche. lines: bit0 SCL/PB6, bit1 SDA/PB7;3 entrambe alte,1 SCL alta/SDA bassa,2 SCL bassa/SDA alta,0 entrambe basse. SDA bassa e BUSY suggeriscono bus trattenuto; non identificano quale slave. Linee alte con stato interno incoerente richiedono invece verifica della periferica/handle. Non attribuire senza misura il guasto a NFC, EEPROM o RTC.
+
+IWDG1 è già avviato prima del controllo hardware (prescaler64, reload1000); l'attesa1s e gli stati bloccati lo alimentano. EE_BusScan preesistente e accessi HAL sincroni possono consumare tempo sotto timeout; HAL_IsDeviceReady ritorna invece subito HAL_BUSY se il flag BUSY è già presente. Un eventuale reset periodico va distinto dalla schermata stabile che alimenta il watchdog. Non aumentati timeout, non aggiunti refresh negli IRQ e non rimossa la protezione watchdog.
+
+### Verifiche e procedura hardware
+
+Host: controllo reale estratto da main.c a -O0 e -Os con ASan/UBSan: A55A valido passa senza attesa; tre errori HAL non avviano provisioning neppure ricevendo il token corretto; magic non valido resta protetto, MAC errato rifiutato, timeout invariato, solo token esatto raggiunge la routine esplicita; tutti128byte preservati. Test CDC: query boot consumata come query, token restituito identico, setter non applicato nel reader. Regressioni stabilizzazione10gruppi + nuovo BOOT, NFC e fondazione14gruppi. Build ARM Debug -O0 e Release -Os,150unità ciascuna; include/define letti dalle rispettive configurazioni .cproject senza modificarle.
+
+1. Programmare manualmente la nuova Debug e usare lo stesso Run after programming che riproduce il problema. Non usare Init Memory o token FGM. Non togliere subito alimentazione.
+2. In caso di blocco acquisire in CDC, una riga per volta: `boot?`, `i2c?`, `ee?`. Riportare anche il testo del display e il programma/opzione reset usati. Queste query funzionano ora anche prima del superloop, dopo la finestra30s e nello stato errore I/O.
+3. Se stage5 e magic=----, correlare err/ISR/lines cached e correnti: è un errore di accesso, non prova di magic corrotto. Se stage4/6 con rc=0, riportare i byte magic effettivi: allora la diagnosi è diversa. Non scrivere magic per tentativi.
+4. Se CDC non risponde, collegare debug senza reset/flash, fermare e leggere PC/LR, startup_diag, hi2c1 e registri I2C. Osservare SDA/SCL con analizzatore se necessario. Nessuna recovery elettrica introdotta prima della verifica.
+5. Solo dopo l'acquisizione confrontare reset hardware e power cycle, rileggere diagnostica e verificare impostazioni/brand. Dopo la correzione della causa confermata ripetere almeno5aggiornamenti con avvio automatico e più cold boot, verificando persistenza e normale funzionamento. Release richiede anch'essa collaudo fisico.
+
+Artefatti: `/private/tmp/adsw100-boot-20261122-debug/` e `/private/tmp/adsw100-boot-20261122-release/`, ELF/HEX/BIN, map, log, flag e manifest hash. Queste sono build di correzione del controllo/diagnostica: **criterio di successo dell'avvio automatico non ancora dimostrato su hardware**.
+
+
+### Prima acquisizione sul banco del22/11, dopo programmazione manuale utente
+
+L'utente conferma avvio riuscito, non il guasto. CDC ADSW100 acquisita senza reset o comandi di modifica:
+
+```text
+boot stage=3 rc=0 magic=A55A cfg=0 mac=1 brand_ram=0 reset=01460000 VTOR=08000000 MSP=2407FFE0 mask=00000000 control=0 ipsr=0 hal=20 lock=0 err=0 ISR=00000001 CR1=00000001 lines=3
+ee writes=0 addr=00 len=0 rc=0 reserved=0 transaction=0 local=0 meta_rc=0 meta=00
+```
+
+INIT e configurazione letti con successo, EUI-48, AXN in RAM. Seconda query i2c? trova owner=0/reserved=0/HAL20/err0/lines3. Alla prima query i2c? era invece in corso RX NFC (owner1/phase3/HAL22/ISR8001/lines1): quella fotografia non è una prova di bus bloccato. La precedente fotografia dopo init periferiche riporta bootlines1; anche questo dato isolato non prova la causa, visto l'avvio riuscito. Flags01460000 decodificati dal CMSIS locale: CPURSTF/PINRSTF/SFTRSTF, senza IWDG/WWDG/POR/BOR impostati nella fotografia; sono flag latched, non un tracciato temporale completo.
+
+NFC riporta addr02/capacity888/rev2/C3,134scansioni e1NACK/0timeout nella seconda acquisizione: dato di contesto, non attribuito al blocco boot, nessuna modifica al servizio. Log seconda acquisizione nella cartella Debug `hardware-acquisition-02.log`. Richiesta all'utente la ripetizione di5programmazioni senza power cycle; acquisizione del guasto e prova ripetuta ancora pendenti. **Un avvio riuscito non dimostra la causa né chiude il criterio di successo.**
+
 ## Regressione salvataggi e avvio dopo programmazione — 16 novembre 2026
 
 Sviluppo funzionale NFC sospeso. Intervento correttivo circoscritto a EEPROM/hook NFC, inizializzazione IRQ e diagnostica. Nessun cambiamento a mappa, versione, catalogo, formato SDCP2, SYNC1 wire o ai servizi DMX/RDM/rete/relè. Nessun commit, tag o programmazione hardware eseguito.
@@ -81,13 +355,13 @@ Il primo mostra `addr=02 probe=02 hal=04` dopo conferma, oppure `addr=--` finch�
 
 `nfc_i2c?` è la fotografia **dell'ultimo errore**, prima di DeInit/Init; `liveirq` e `cb` sono contatori correnti. Senza errori i registri storici possono essere zero. Phase1=prefisso,2=pausa dopo STOP,3=RX,4=write,5=rilascio,6=programmazione. `last_hal` è l'argomento del trasferimento fallito. `irq=EV/ER` è il conteggio al guasto, `en/pend` hanno bit0 EV e bit1 ER; `mask` è PRIMASK/BASEPRI. `lines` bit0=SCL(PB6),bit1=SDA(PB7),3 indica entrambe alte. Questi dati permettono di distinguere NACK processato, flag hardware pendente, IRQ assente e bus trattenuto. Non vengono letti/scritti EEPROM o parametri dal comando diagnostico.
 
-Verifiche software: build ARM150unità senza warning; regressioni NFC complete con nuovo caso80ms/preloadH7, timeout vero senza rotazione, indirizzo02/55, header estraneo e bridge IRQ; fondazione14gruppi e stabilizzazione10gruppi PASS. Verificati hash identici di EEPROM, driver DMX/RDM/rete/relè, RTC/UI, catalogo/fingerprint/generatore/vettori; funzioni NfcBuild/Parse/Process testualmente identiche. Le modifiche dei file generati sono solo USER CODE. Nessuna modifica a URC01/DRV_STG4, nessun commit/tag/flash.
+Verifiche software: build ARM150unità senza warning; regressioni NFC complete con nuovo caso80ms/preloadH7, timeout vero senza rotazione, indirizzo02/55, header estraneo e bridge IRQ; fondazione14gruppi e stabilizzazione10gruppi PASS. Verificati hash identici di EEPROM, driver DMX/RDM/rete/relè, RTC/UI, catalogo e vettori allora in uso; funzioni NfcBuild/Parse/Process testualmente identiche. Le modifiche dei file generati sono solo USER CODE. Nessuna modifica a URC01/DRV_STG4, nessun commit/tag/flash.
 
 Build: `/private/tmp/adsw100-nfc-i2c-fix/ADSW100.elf`, `.bin`, `.hex`; ELF SHA-256 `5ad90e66be602b9e153ff1bf3bf321ce0d3ef2be5a8de021cdeb981498f29ed7`, BIN `93bedd61e905f229fe3804ad25853d15f498d6b4d936c9d94806aeef8b584c8b`. Collaudo fisico ancora richiesto: pannello Home, prima prova senza campo RF, lettura delle due diagnostiche. Eventuali timeout residui richiedono la nuova fotografia; non sono dichiarati risolti sul dispositivo dai soli test host. Nessuna sonda ST-LINK rilevata; la CDC ADSW risultava occupata dal terminale, quindi non sono stati acquisiti nuovi registri live.
 
 ## SDCP2 ADSW100 — integrazione fase 2, 15 novembre 2026
 
-Implementati nel solo ADSW100 SNAPSHOT, REQUEST e ACK SDCP2/NDEF/SYNC1, senza cambiare cataloghi o formato approvati. `Core/Inc/nfc_catalog.h` è generato dalla sorgente JSON: fingerprint ADSW `14ee6a5f3b5e73f4487b1a83f83481530618172a55d8fb6b031f2cc9c38a3680`, 15 istanze, snapshot base197byte, TLV/NDEF233byte (240 per le scritture I2C allineate). Software ID operativo resta1.4.0, coerente con RDM; il confronto golden usa l'identità/Software ID della fixture, non pretende che il seriale reale sia quello dell'esempio.
+Prima integrazione storica di SNAPSHOT, REQUEST e ACK SDCP2/NDEF/SYNC1. Il formato operativo è ora quello descritto all'inizio di questo audit. Il Software ID resta quello del firmware, coerente con RDM.
 
 File funzionali: `nfc_i2c.c/h`, header dati generato, `eeprom.c/h`, integrazione USER CODE di `main.c` e `stm32h7xx_it.c`, comando CDC `nfc?` in `usb_debug.c`. `rtc_i2c.c` rispetta la riserva del bus; `UI_ConfigActive()` in `user_interface.c/h` è una query che non cambia navigazione e sospende nuove operazioni NFC mentre il pannello configura. Il bus pendente viene comunque drenato, per evitare BUSY sul salvataggio. Non aggiunti moduli NFC/controller/router o librerie crittografiche.
 
@@ -111,7 +385,7 @@ Dopo reset B6 si finalizza soltanto se il documento e **tutti** i parametri già
 - Conservazione legacy host: tre brand, Videlio con menu_code1, tutti i byte00..27 e luminosità legacy150 invariati durante la pubblicazione; nessuna normalizzazione del parametro non modificato.
 - Fault injection host:170 scenari I/O nel commit;68 interruzioni immediate a livello di byte su richiesta multiparametro rete/DMX,24 nell'Init EEPROM. Reset simulato senza cleanup: nessuna riscrittura dei parametri già elaborati; E8 solo con default verificati. Non sono tagli fisici di alimentazione né un modello analogico delle celle EEPROM.
 - Init host: sostituzione JSON proprio posto all'offset legacy, nessuna importazione, eliminazione coda, riconferma dopo reset senza seconda formattazione, CC vergine2k agli indirizzi02 e55 preservando UID/indirizzo/lock; contenuto estraneo preservato.
-- Fondazione:14 gruppi PASS e fingerprint/cataloghi invariati. Stabilizzazione:10 gruppi PASS, inclusi soak e hold Node30s. Sorgenti DMX/RDM/Art-Net/sACN/relè verificati per hash identico a inizio fase2; nessuna modifica ai riferimenti URC/DRV.
+- Fondazione:14 gruppi PASS con i cataloghi allora in uso. Stabilizzazione:10 gruppi PASS, inclusi soak e hold Node30s. Sorgenti DMX/RDM/Art-Net/sACN/relè verificati per hash identico a inizio fase2; nessuna modifica ai riferimenti URC/DRV.
 - Build ARM completa150unità PASS, senza flash automatico; artefatti in `/private/tmp/adsw100-nfc-sdcp2`.
 
 Artefatti di questa build: ELF SHA-256 `7df63be13bbb6d1b9cd284668d89ceecd901773e45ee2360472a52511539c5be`, BIN `6ef2142c661d90843a66c903d191e370deb4d62695b49cc9965816d95f9e2128`. text221816/data648/bss75067 byte (build Debug host-generated,150unità). Nessun warning nei log ARM. Sezioni generate CubeMX fuori USER CODE verificate identiche a HEAD; CRLF preservati. Nessun flash eseguito.
@@ -122,11 +396,10 @@ Da misurare su hardware: tempi I2C/RF e reali lock/capacità, field remove/reapp
 
 ## Fondazione NFC comune — 15 novembre 2026
 
-Architettura approvata e specifica congelata in [protocol/nfc/README.md](../protocol/nfc/README.md): SDCP2/NDEF/SYNC1, registro per namespace, catalogo esterno da JSON comune, binario v1 e fingerprint SHA-256. Censite66 chiavi nei quattro progetti; voci non completamente specificate restano opaque e non editabili. Nessun nuovo PID rete: selettori standard 0703/0706/070A/070B, con mapping persistente ADSW distinto dalle risposte GET correnti. PWM passa come enum UINT8 F1..F7, mantenendo codici0..6.
-
-Realizzati generatore/validatore host, cataloghi e vettori. Quattordici gruppi di test PASS, inclusi31 vettori SDCP, round-trip binario/NDEF, generazione identica, fingerprint, gestione errori e mapping rete legacy. Ed25519 reale, adapter firmware, tempi bus/RF e power-cut persistente restano da verificare/implementare. In questa fase nessuna modifica a firmware o riferimenti; nessun commit/tag. I 16 byte NFC autorizzati non forniscono atomicità della configurazione EEPROM in place.
-
-Data: 14 novembre 2026. Audit iniziale statico, seguito dagli incrementi e test documentati sotto. Base ADSW100: commit `7cbf16e`, firmware dichiarato 1.4.0; working tree inizialmente pulito. Nella prima analisi non erano state eseguite compilazioni o misure hardware. I risultati seguenti consolidano le evidenze raccolte, con rettifica esplicita del comportamento DMX richiesta dall'utente.
+Il primo censimento distingueva PID standard e coppie manufacturer + PID.
+Il formato sperimentale è stato sostituito dal contratto corrente SDCP2 /
+ST2FW v3 descritto sopra. Restano validi il mapping dei PID ADSW100 e la
+protezione dei 128 byte applicativi legacy.
 
 ## Assegnazione Model ID e codice Uploader96 — 15 novembre 2026
 
