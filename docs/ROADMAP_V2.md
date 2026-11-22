@@ -1,5 +1,43 @@
 # ADSW100 v2.0.0 — roadmap incrementale
 
+## Allineamento SDCP2 / ST2FW v3 — 22 novembre 2026
+
+- [x] Confrontare DRV_STG4 e URC01 effettivi. Pubblicare SCHEMA_REF da 4 byte e mantenere le 15 istanze ADSW100 già assegnate a 17FA:0060 rev1.
+- [x] Verificare Init esplicito su NDEF sperimentale proprio, cessione I²C a RDM, ripresa RF con readback e conservazione dei parametri legacy.
+- [x] Consegnare JSON manuale riconosciuto dal parser streaming URC01 e dai due validatori del formato v3.
+- [x] Eseguire test host sanitizer, regressioni stabilizzazione, build ARM Debug/Release e controllo MSP per DFU ROM.
+- [x] Verificare ST2FW v3 con un BIN DRV originale e documentare il rifiuto del BIN ADSW100 privo di SDI1.
+- [x] Acquisire il blocco NDEF incompleto e verificare il recupero conservativo con E8 sul dump esatto tramite test host e build ARM.
+- [ ] Programmare sul banco la build di recupero, verificare SYNCED/A5 con E8 già pendente e rileggere lo SNAPSHOT da URC01.
+- [ ] Collaudo hardware con URC01, transazioni RF, readback e persistenza. Seguire [NFC_PROTOCOL.md](NFC_PROTOCOL.md).
+- [ ] Preparare il primo ST2FW ADSW100 con catalogo incorporato quando saranno definiti SDI1/SDC1, Target ID e layout applicativo.
+
+## Aggiornamento banco: USB DFU / ROM9.1 — 22 novembre 2026
+
+- [x] Identificare la procedura reale: CubeProgrammer USB DFU, BOOT/RESET con BOOT poi rilasciato; non handoff del launch CubeIDE.
+- [x] Acquisire il nuovo blocco via SWD hot-plug: CPU in ROM, VTOR1FF09800, ciclo autobaud USART1, nessun fault Cortex; flash/vettori identificati.
+- [x] Verificare AN2606 ROM9.1 e non conformità MSP a fine RAM; applicare gap32byte nel solo linker, senza reset/delay o modifica EEPROM.
+- [x] Verificare vettori e margini heap/stack sulle build complete Debug/Release.
+- [x] Preparare A/B della Release realmente programmata: stessi oggetti, baseline BIN identico, soltanto3parole `_estack` cambiate.
+- [x] Eseguire test A/B corretto con DMX/Ethernet invariati: esito negativo, vettore corretto verificato su target, stesso blocco ROM/USART1. Non dichiarare risolto.
+- [x] Isolare il blocco sul banco. L'utente conferma avvio ripetibile con DMX scollegato, anche con Ethernet collegata. Per il DFU ROM scollegare DMX prima della programmazione e riconnetterlo dopo l'avvio.
+- [ ] Completare la verifica formale di persistenza impostazioni dopo aggiornamenti, reset hardware e riaccensione. Il numero di cicli riusciti non è stato registrato.
+- [ ] Se ritorna Wait for boot nell'applicazione, usare boot?/i2c?/ee?; tenere distinta questa diagnosi dal blocco ROM.
+
+
+## Avvio post-programmazione — 22 novembre 2026
+
+- [x] Ricostruire reset/startup C/main/periferiche/configurazione/controllo INIT e attesa token; nessun bootloader separato o ST2 implementato nei sorgenti esaminati.
+- [x] Identificare difetto certo: errore EE_ReadU16 scambiato per magic invalido; distinguere I/O da contenuto senza bypass protezioni o scritture.
+- [x] Aggiungere boot? cached e query CDC read-only anche durante blocco/provisioning; conservare token FGM/MAC, timeout e comportamento del boot valido.
+- [x] Test reali del controllo boot a -O0/-Os con fault injection HAL, token e conservazione128byte; CDC e regressioni precedenti.
+- [x] Build ARM Debug/Release dalle configurazioni esistenti; progetto e protocolli invariati.
+- [x] Prima acquisizione CDC read-only dopo avvio riuscito sul banco: A55A, cfg0, EUI-48, AXN, nessuna scrittura EEPROM osservata; non è una riproduzione del guasto.
+- [ ] Acquisire boot?/i2c?/ee? nello stato di guasto, prima di reset o power cycle; identificare la causa effettiva di bus/lettura o magic non valido.
+- [ ] Implementare solo la recovery giustificata dall'acquisizione. Non assumere che la distinzione del messaggio risolva l'avvio automatico.
+- [ ] Dimostrare aggiornamento→avvio automatico per almeno5cicli, NRST e power-on, con impostazioni/brand preservati; qualificare Debug e Release su hardware.
+
+
 ## Priorità: regressione I2C / salvataggi e riavvio — 16 novembre 2026
 
 - [x] Sospendere nuove funzioni NFC e confrontare hook/ownership, EEPROM, RTC, main e IRQ prima/dopo integrazione.
@@ -25,8 +63,8 @@
 
 ## NFC SDCP2 — fase 2 ADSW100, 15 novembre 2026
 
-- [x] Snapshot C conforme ai vettori ufficiali, header catalogo generato, dati correnti da EEPROM verificata/CFG e identità centralizzata.
-- [x] NDEF SR/non-SR, selettori e fingerprint; nessun descrittore nel tag, nessun nuovo PID o modifica al catalogo approvato.
+- [x] Prima implementazione Snapshot C con dati correnti da EEPROM verificata, CFG e identità centralizzata. Il formato attuale è descritto nella sezione più recente.
+- [x] NDEF SR/non-SR e selettori; nessun descrittore nel tag, nessun nuovo PID o modifica al catalogo approvato.
 - [x] Driver IT STOP/READ e rilascio lock adattati da DRV, IRQ USER CODE e servizio cooperativo nel superloop.
 - [x] REQUEST/ACK, revisioni, CRC richiesta, deduplicazione e controllo base, estensioni opache conservate.
 - [x] Metadata0x28..0x37; invalidazione preventiva delle basi dopo salvataggi locali, nessuna migrazione/inizializzazione distruttiva.
@@ -37,19 +75,7 @@
 - [ ] Hardware: inizializzazione reale CC/tag e UID/lock, leggere snapshot con reader SDCP2, REQUEST/ACK e persistenza dopo reboot.
 - [ ] Hardware: RF mantenuto/rimosso, EEPROM/NFC power-cut reali e recovery conservativo; tag estranei/illeggibili non cancellati.
 - [ ] Hardware: convivenza col traffico DMX/RDM/Node/rete, watchdog e RTC durante il commit EEPROM sincrono preesistente.
-- [ ] Client generico URC01, SD/fallback, firma Ed25519 e app smartphone restano fasi successive: nessuna compatibilità del vecchio writer URC dichiarata.
-
-## NFC comune — fondazione offline, 15 novembre 2026
-
-- [x] Architettura approvata: SDCP2/NDEF/SYNC1, catalogo esterno da JSON comune, namespace standard/manufacturer+PID, SHA-256 e futura firma Ed25519.
-- [x] Registro censito (66 chiavi), schema JSON chiuso, cataloghi ADSW100 e DRV_STG4 e specifica binaria/wire congelati in [protocol/nfc](../protocol/nfc/README.md).
-- [x] Generatore deterministico senza dipendenze, 14 gruppi host e 31 vettori SDCP positivi/negativi; verificati binario, fingerprint, NDEF, limiti, transazioni e rete EEPROM.
-- [x] PWM enum di un byte con F1..F7; nessun Hz nel tag. Formato firma e fixture pronti senza librerie crittografiche firmware.
-- [ ] Loader SD, fallback flash, verifica Ed25519 reale, trust store e attivazione recuperabile; cloud in fase successiva.
-- [ ] Adapter NFC nei firmware e commit conservativo dei metadati 0x28..0x37, dopo ulteriori test power-cut; nessuna implementazione firmware in fase 1.
-- [ ] Collaudo RF con URC01/iOS/Android e verifica sul chip reale; le prove host non attestano il funzionamento fisico.
-
-Stato al 14 novembre 2026: baseline 480 MHz/stabilizzazione e branding/migrazione collaudati dall’utente (`0b5fa6c`, `1e71467`). Incremento RDM/Node implementato e verificato con build ARM e test host; collaudo fisico ancora da eseguire. Le caselle software non attestano misure hardware. Nessun commit/tag automatico. Audit in [AUDIT.md](AUDIT.md), persistenza in [EEPROM_MIGRATION.md](EEPROM_MIGRATION.md).
+- [ ] Collaudo client URC01 sul banco e distribuzione del catalogo nel primo ST2FW ADSW100.
 
 ## Identificatori assegnati96
 

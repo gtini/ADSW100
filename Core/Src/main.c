@@ -220,6 +220,49 @@ static int is_plausible_eui64(const uint8_t *v)
     return 1; // accetta sia canonical (…FF:FE…) sia non-canonical
 }
 
+/* Diagnostica boot: sola RAM, nessuna modifica a protezione o EEPROM. */
+typedef struct
+{
+    uint32_t reset, vtor, msp, mask, control, ipsr;
+    uint32_t error, state, lock, isr, cr1, lines;
+    HAL_StatusTypeDef magic_status, config_status;
+    uint16_t magic;
+    uint8_t stage, mac_source;
+    bool magic_attempted, config_attempted;
+} startup_diagnostic_t;
+static startup_diagnostic_t startup_diag;
+
+/* Main prima di HAL_Init; SystemInit e startup C sono già stati eseguiti. */
+static void Startup_RecordEntry(void)
+{
+    startup_diag.reset = RCC->RSR;
+    startup_diag.vtor = SCB->VTOR;
+    startup_diag.msp = __get_MSP();
+    startup_diag.mask = __get_PRIMASK() | (__get_BASEPRI() << 8);
+    startup_diag.control = __get_CONTROL();
+    startup_diag.ipsr = __get_IPSR();
+}
+
+/* CDC anche nel blocco di avvio: nessun I/O I2C, solo esiti già acquisiti.
+   Stage:0 ingresso main,1 check HW,2 lettura INIT,3 INIT valido,4 token,5 I/O,6 attesa finale. */
+void Startup_FormatDiagnostics(char *out, size_t capacity)
+{
+    char magic[5] = "----";
+    if (startup_diag.magic_attempted && startup_diag.magic_status == HAL_OK)
+    {
+        snprintf(magic, sizeof magic, "%04X", startup_diag.magic);
+    }
+    snprintf(out, capacity, "boot stage=%u rc=%d magic=%s cfg=%d mac=%u brand_ram=%u reset=%08lX VTOR=%08lX MSP=%08lX mask=%08lX control=%lX ipsr=%lu hal=%lX lock=%lu err=%lX ISR=%08lX CR1=%08lX lines=%lu\r\n",
+             startup_diag.stage, startup_diag.magic_attempted ? (int)startup_diag.magic_status : -1,
+             magic, startup_diag.config_attempted ? (int)startup_diag.config_status : -1,
+             startup_diag.mac_source, brand, (unsigned long)startup_diag.reset,
+             (unsigned long)startup_diag.vtor, (unsigned long)startup_diag.msp,
+             (unsigned long)startup_diag.mask, (unsigned long)startup_diag.control,
+             (unsigned long)startup_diag.ipsr, (unsigned long)startup_diag.state,
+             (unsigned long)startup_diag.lock, (unsigned long)startup_diag.error,
+             (unsigned long)startup_diag.isr, (unsigned long)startup_diag.cr1, (unsigned long)startup_diag.lines);
+}
+
 void hardware_check(void)
 {
 	uint8_t e48[6] = {0};
@@ -228,6 +271,7 @@ void hardware_check(void)
 
 	USB_Printf("\r\n=== Hardware Check ===\r\n");
 
+    startup_diag.stage = 1;
     EE_BusScan();     // mostra i device sul bus
     EE_DumpTail();    // dump 0xF0..0xFF per diagnosi rapida
 
@@ -246,6 +290,7 @@ void hardware_check(void)
     int have_e48 = (EE_Read(0xFA, e48, 6) == HAL_OK) && is_plausible_eui48(e48);
     int have_e64 = (EE_Read(0xF8, e64, 8) == HAL_OK) && is_plausible_eui64(e64);
 
+    startup_diag.mac_source = have_e48 ? 1 : have_e64 ? 2 : 3;
     if (have_e48)
     {
         USB_Printf("EEPROM 24AA025E48: OK (EUI-48 @0xFA)\n");
@@ -278,7 +323,9 @@ void hardware_check(void)
 
     // 4) Config EEPROM
 
-    if (EE_LoadConfig() == HAL_OK)
+    startup_diag.config_attempted = true;
+    startup_diag.config_status = EE_LoadConfig();
+    if (startup_diag.config_status == HAL_OK)
     {
         USB_Printf("Configuration loaded\n");
     }
@@ -465,11 +512,39 @@ static void mac_to_hex_nosep(const uint8_t mac[6], char out[13])
 /* Ritorna 1 = ok (prosegui boot), 0 = bloccato */
 static int Startup_SimpleUnlock(void)
 {
-  /* Se già inizializzata, niente attesa */
-  if (EE_ReadU16(EE_OFFS_INIT) == EE_INIT_VALUE)
+  /* EE_ReadU16 confonde un errore I/O con il valore0: qui serve l'esito HAL.
+     Un bus illeggibile non autorizza provisioning, reset o scritture EEPROM. */
+  uint8_t init[2] = {0};
+  startup_diag.stage = 2;
+  startup_diag.magic_attempted = true;
+  startup_diag.magic_status = EE_Read(EE_OFFS_INIT, init, sizeof init);
+  startup_diag.magic = (uint16_t)((uint16_t)init[0] << 8 | init[1]);
+  startup_diag.error = hi2c1.ErrorCode;
+  startup_diag.state = HAL_I2C_GetState(&hi2c1);
+  startup_diag.lock = hi2c1.Lock;
+  startup_diag.isr = hi2c1.Instance->ISR;
+  startup_diag.cr1 = hi2c1.Instance->CR1;
+  startup_diag.lines = (GPIOB->IDR >> 6) & 3u;
+  if (startup_diag.magic_status != HAL_OK)
   {
+    startup_diag.stage = 5;
+    LCD_Clear();
+    LCD_DrawText("EEPROM read error", 0, 20, 0, 0, 0);
+    USB_Printf("EEPROM read failed: rc=%u; boot? / i2c? / ee?\r\n", startup_diag.magic_status);
+    while (1)
+    {
+      char diagnostic_line[160];
+      HAL_IWDG_Refresh(&hiwdg1);
+      /* Solo query diagnostiche gestite dal reader; nessun token è applicato. */
+      (void)USB_ReadLineTimeout(diagnostic_line, sizeof diagnostic_line, 50);
+    }
+  }
+  if (startup_diag.magic == EE_INIT_VALUE)
+  {
+    startup_diag.stage = 3;
     return 1;
   }
+  startup_diag.stage = 4;
 
   /* calcola stringa attesa: "FGM" + MAChex */
   uint8_t mac[6]; EE_GetLocalMAC48(mac);
@@ -516,10 +591,13 @@ static int Startup_SimpleUnlock(void)
   }
 
   /* timeout -> fermo in attesa firmware */
+  startup_diag.stage = 6;
   USB_Printf("Ready for firmware\r\n");
   while (1)
   {
 	  HAL_IWDG_Refresh(&hiwdg1);
+    char diagnostic_line[160];
+    (void)USB_ReadLineTimeout(diagnostic_line, sizeof diagnostic_line, 50);
     /* aggiungere qui eventuale bootloader/DFU */
   }
   /* never */
@@ -571,6 +649,7 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
+  Startup_RecordEntry();
 
 	MPU_Config();
 	SCB_EnableICache();

@@ -112,6 +112,17 @@ static bool USB_ServiceParseValue(const char *text, uint8_t *out)
     return true;
 }
 
+/* Query diagnostiche condivise con il reader del provisioning. Mai setter in boot. */
+static bool USB_ServiceBootQuery(const char *line)
+{
+    if (strcmp(line, "boot?") == 0) Startup_FormatDiagnostics(s_service_response, sizeof s_service_response);
+    else if (strcmp(line, "ee?") == 0) EE_FormatDiagnostics(s_service_response, sizeof s_service_response);
+    else if (strcmp(line, "i2c?") == 0) NFC_FormatLiveDiagnostics(s_service_response, sizeof s_service_response);
+    else return false;
+    s_service_response_pending = true;
+    return true;
+}
+
 /* Scritture solo nei primi 30 s da HAL_Init, come la deadline assoluta RSH7.
    La chiusura resta memorizzata anche dopo il wrap di HAL_GetTick. */
 void USB_ServiceTask(void)
@@ -129,6 +140,7 @@ void USB_ServiceTask(void)
     }
     char line[160];
     if (!USB_ServiceTakeLine(line, sizeof line)) return;
+    if (USB_ServiceBootQuery(line)) return;
     const char *response = "ERROR\r\n";
     bool brand_query = strcmp(line, "brand?") == 0;
     bool code_query = strcmp(line, "menu_code?") == 0;
@@ -138,13 +150,6 @@ void USB_ServiceTask(void)
     {
         NFC_SetEnabled(line[4] == '1');
         snprintf(s_service_response, sizeof s_service_response, "OK VOLATILE CHECK i2c?\r\n");
-        s_service_response_pending = true;
-        return;
-    }
-    if (strcmp(line, "ee?") == 0 || strcmp(line, "i2c?") == 0)
-    {
-        if (line[0] == 'e') EE_FormatDiagnostics(s_service_response, sizeof s_service_response);
-        else NFC_FormatLiveDiagnostics(s_service_response, sizeof s_service_response);
         s_service_response_pending = true;
         return;
     }
@@ -215,7 +220,20 @@ int USB_ReadLineTimeout(char *out, size_t maxlen, uint32_t timeout_ms)
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < timeout_ms)
     {
-        if (USB_ServiceTakeLine(out, maxlen)) return (int)strlen(out);
+        /* Condivide la coda risposte senza consumare token quando USB TX è occupata. */
+        if (s_service_response_pending)
+        {
+            USBD_CDC_HandleTypeDef *cdc = hUsbDeviceFS.pClassData;
+            if (CDC_IsConfigured() && cdc && cdc->TxState == 0 &&
+                CDC_Transmit_FS((uint8_t *)s_service_response, (uint16_t)strlen(s_service_response)) == USBD_OK)
+            {
+                s_service_response_pending = false;
+            }
+        }
+        else if (USB_ServiceTakeLine(out, maxlen))
+        {
+            if (!USB_ServiceBootQuery(out)) return (int)strlen(out);
+        }
     }
     return 0;
 }

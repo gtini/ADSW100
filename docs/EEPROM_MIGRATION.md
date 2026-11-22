@@ -1,5 +1,44 @@
 # EEPROM: compatibilità e migrazione Videlio
 
+## Ripresa Init con frammento noto
+
+Il recupero del frammento NTAG verificato sul banco riusa E8 già salvato
+e non richiede una nuova inizializzazione della EEPROM. I valori dello
+SNAPSHOT vengono dalla configurazione già verificata. Al termine del
+readback viene consumato soltanto lo stato E8. Nessuna nuova versione
+EEPROM o modifica alla mappa.
+
+## Allineamento SDCP2 al catalogo corrente — 22 novembre 2026
+
+La sezione schema del tag ora contiene solo la revisione manuale a quattro
+byte. La mappa EEPROM resta 0x00–0x27 per la configurazione e 0x28–0x37 per
+i metadati di transazione. Non vi è una migrazione automatica dei documenti
+sperimentali. Init Memory autorizzato costruisce i default applicativi e
+pubblica i valori verificati, senza importarli dal tag precedente.
+Il bootstrap su tag vuoto pubblica la configurazione già valida.
+
+Con REQUEST valide, il readback verifica anche backlight e OFF Time nonché
+IPv4/mask/gateway/DNS. Il rollback RAM conserva il byte di luminosità
+preesistente se fallisce il commit. Il salvataggio RDM ha precedenza su
+nuove operazioni NTAG. I test host confermano la conservazione di magic,
+brand, codice menu e byte legacy non coinvolti. In caso di reset con
+scrittura parziale, la ripresa resta conservativa. Le verifiche su
+EEPROM fisica sono elencate in [NFC_PROTOCOL.md](NFC_PROTOCOL.md).
+
+## Acquisizione ROM e workaround stack — 22 novembre 2026
+
+Il successivo blocco è stato acquisito in ROM ST via hot-plug, prima del normale funzionamento applicativo: non dimostra una corruzione EEPROM. La correzione di compatibilità ROM9.1 modifica soltanto `_estack` nel linker Flash (gap32byte SRAM, MSP2407FFE0). Non cambia EEPROM, INIT, mappa, metadati, MAC o brand; non esegue inizializzazioni. La versione A/B della stessa Release cambia soltanto3parole relative a quel simbolo. Sul banco l'avvio dopo DFU riesce con DMX scollegato e si blocca nel ROM quando è presente il segnale DMX. Per questa procedura non occorre inizializzare la memoria. La verifica formale della persistenza dopo più aggiornamenti e riaccensioni resta da completare, come riportato in AUDIT.md.
+
+
+## Controllo INIT al boot — 22 novembre 2026
+
+Prima acquisizione hardware dopo programmazione manuale: avvio riuscito confermato dall’utente, INIT A55A letto con HAL_OK, configurazione caricata con HAL_OK, EUI-48 e brand RAM0; contatore scritture EEPROM0 nella prima lettura. Non è una verifica byte-per-byte né una riproduzione del guasto: prove ripetute e confronto power-on ancora pendenti.
+
+INIT resta BE16 A55A a00..01; nessun offset, valore o migrazione modificati. Il driver EEPROM è identico alla baseline7d184e5. Startup_SimpleUnlock ora usa il ritorno HAL di EE_Read anziché interpretare il valore0 restituito da EE_ReadU16 su errore. Un errore I/O non abilita provisioning o inizializzazioni: il display distingue EEPROM read error da un magic effettivamente letto e non valido. La guardia e il token FGM/MAC preesistenti restano attivi.
+
+boot? è una fotografia RAM di lettura INIT, esito caricamento e contesto; non rilegge né scrive EEPROM. Parametri, brand e128byte verificati preservati nei test del controllo boot con errori HAL, token e timeout, a -O0/-Os. Questo non certifica il bus fisico né l'avvio automatico dopo flash: acquisizione hardware e verifica della causa ancora necessarie, come descritto in AUDIT.md. Nessuna riscrittura del magic, Init Memory o recovery distruttiva.
+
+
 ## Correzione hook salvataggi locali — 16 novembre 2026
 
 Mappa0x00..0x37 e versioni invariate. L'Init tag pendente E8 non deve dipendere dalla disponibilità NFC per consentire un salvataggio del pannello. Un edit locale con valore cambiato annulla tale consenso, incrementa la revisione e prepara C3 prima di scrivere il parametro. Non inizializza il tag e non riapplica default. Un successivo Init Memory esplicito può autorizzarlo nuovamente.
@@ -47,7 +86,7 @@ L’utente autorizza 16 byte 0x28..0x37; i percorsi EEPROM esaminati terminano a
 | 30..33 | Ultima richiesta associata | 4 |
 | 34..37 | CRC32 richiesta, non CRC della configurazione | 4 |
 
-Mappa 00..27 e versione struttura3 invariate; niente slot aggiuntivi. Schema/SHA-256 statici restano in flash, non in EEPROM. La sequenza fisica di commit e recupero non è ancora implementata o validata; la memoria in place non diventa atomica grazie ai soli 16 byte.
+Mappa 00..27 e versione struttura3 invariate; niente slot aggiuntivi. La revisione schema resta in flash. Il recupero è provato con interruzioni simulate e resta da qualificare su hardware; la memoria in place non diventa atomica grazie ai soli 16 byte.
 
 Il modello host [protocol/nfc](../protocol/nfc/README.md) verifica che EEPROM salva BE il numero raw lwIP little-endian: 192.168.1.20 corrisponde ai byte legacy 14 01 A8 C0, mentre NFC trasmette C0 A8 01 14. DHCP attivo conserva IP/mask salvati; DNS usa indici0/1, route canonica SET ID0. Test per tutti i prefissi0..32, rifiuto di mask non contigua e conservazione byte00..02/18..7F. È una prova host, non un nuovo writer hardware né una migrazione eseguita.
 
