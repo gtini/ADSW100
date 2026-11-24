@@ -13,7 +13,7 @@
 
 // Versione Firmware
 #define FW_VERSION_MAJOR   1
-#define FW_VERSION_MINOR   4
+#define FW_VERSION_MINOR   5
 #define FW_VERSION_PATCH   0
 
 /* Assegnazione utente 15/11/2026: codice uploader/Product ID futuro96.
